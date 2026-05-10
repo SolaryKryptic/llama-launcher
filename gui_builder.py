@@ -292,7 +292,7 @@ class LlamaServerGUI:
         root.grid_columnconfigure(0, weight=1)
 
         outer_frame = ttk.Frame(root, padding=(6, 4))
-        outer_frame.grid(row=0, column=0, sticky="ns")
+        outer_frame.grid(row=0, column=0, sticky="nsew")
 
         # Title label at top of window (bold, larger font).
         title_label = ttk.Label(
@@ -306,6 +306,13 @@ class LlamaServerGUI:
         inner_frame.grid(row=1, column=0, sticky="nswe")
         outer_frame.columnconfigure(0, weight=1)
 
+        # Configure canvas to resize with window.
+        def _on_canvas_resize(event):
+            if hasattr(self, 'canvas') and event.widget == inner_frame:
+                try: self.canvas.config(width=event.width - 20)
+                except Exception: pass
+        
+        inner_frame.bind("<Configure>", _on_canvas_resize)
         self.canvas = tk.Canvas(inner_frame, highlightthickness=0, bg="#f5f5f5")
         scrollbar = ttk.Scrollbar(
             inner_frame, orient="vertical", command=self.canvas.yview
@@ -333,6 +340,21 @@ class LlamaServerGUI:
 
         self.scrollable.bind("<Configure>", lambda e: _on_scroll(e))
 
+        # Configure canvas and frames for proper horizontal expansion.
+        def _on_window_resize(event):
+            if hasattr(self, 'canvas') and event.widget in (outer_frame, inner_frame):
+                try:
+                    w = max(20, outer_frame.winfo_width() - 40)
+                    h = max(100, root.winfo_height() - 80)  # grow height with window
+                    self.canvas.config(width=w)
+                    self.canvas.itemconfigure(scroll_content_id, width=w - 15)
+                    self.canvas.config(height=h)
+                except Exception: pass
+        
+        outer_frame.bind("<Configure>", _on_window_resize)
+        root.grid_rowconfigure(0, weight=1)
+        root.grid_columnconfigure(0, weight=1)
+
         self.canvas.configure(yscrollcommand=scrollbar.set)
         self.canvas.pack(side="left", fill="both", expand=True, pady=(0, 4))
         scrollbar.pack(side="right", fill="y")
@@ -354,7 +376,7 @@ class LlamaServerGUI:
         cmd_frame = ttk.LabelFrame(
             self.scrollable, text="Generated Command", padding=(10, 8)
         )
-        cmd_frame.pack(fill="x", padx=6, pady=(4, 2))
+        cmd_frame.pack(fill="both", padx=6, pady=(4, 2))
 
         # Frame for the command text + scrollbar.
         txt_row = ttk.Frame(cmd_frame)
@@ -372,7 +394,7 @@ class LlamaServerGUI:
 
         # Copy button row below text.
         btn_frame = ttk.Frame(cmd_frame)
-        btn_frame.pack(fill="x", pady=(4, 2))
+        btn_frame.pack(fill="both", pady=(4, 2))
 
         copy_btn = ttk.Button(
             btn_frame, text="\U0001F4CB Copy", command=self._copy_command
@@ -386,7 +408,7 @@ class LlamaServerGUI:
     def _section_model_loading(self, parent):
         """Model loading section: browse button + Low VRAM / MLock toggles."""
         frame = ttk.LabelFrame(parent, text="Model Loading", padding=(8, 6))
-        frame.pack(fill="x", padx=6, pady=4)
+        frame.pack(fill="both", padx=6, pady=4)
 
         # Browse row — file dialog to select a .gguf model.
         btn_row = ttk.Frame(frame)
@@ -424,7 +446,7 @@ class LlamaServerGUI:
     def _section_context_gpu(self, parent):
         """Context size & GPU layers section (side-by-side columns)."""
         frame = ttk.LabelFrame(parent, text="Performance", padding=(8, 6))
-        frame.pack(fill="x", padx=6, pady=4)
+        frame.pack(fill="both", padx=6, pady=4)
 
         # Left column: Context Size.
         ctx_frame = ttk.Frame(frame)
@@ -518,7 +540,7 @@ class LlamaServerGUI:
     def _section_server_settings(self, parent):
         """Server settings section (always visible — sensible defaults)."""
         frame = ttk.LabelFrame(parent, text="Network & Server", padding=(8, 6))
-        frame.pack(fill="x", padx=6, pady=4)
+        frame.pack(fill="both", padx=6, pady=4)
 
         # Host / Port row.
         net_row = ttk.Frame(frame)
@@ -566,7 +588,7 @@ class LlamaServerGUI:
             if enabled:
                 # Pack all child widgets back in.
                 for w in [self._samp_seed_row, self._samp_temp_row, self._samp_topk_frame, self._samp_topp_frame, self._samp_rp_frame]:
-                    w.pack(fill="x", pady=(2, 0))
+                    w.pack(fill="both", pady=(2, 0))
             else:
                 # Hide all child widgets.
                 for w in [self._samp_seed_row, self._samp_temp_row, self._samp_topk_frame, self._samp_topp_frame, self._samp_rp_frame]:
@@ -581,7 +603,7 @@ class LlamaServerGUI:
                 self.config.sampling_params_enabled = enabled
                 if enabled:
                     for w in [self._samp_seed_row, self._samp_temp_row, self._samp_topk_frame, self._samp_topp_frame, self._samp_rp_frame]:
-                        w.pack(fill="x", pady=(2, 0))
+                        w.pack(fill="both", pady=(2, 0))
                 else:
                     for w in [self._samp_seed_row, self._samp_temp_row, self._samp_topk_frame, self._samp_topp_frame, self._samp_rp_frame]:
                         w.pack_forget()
@@ -594,7 +616,7 @@ class LlamaServerGUI:
                 self.config.sampling_params_enabled = enabled
                 if enabled and hasattr(self, '_update_command'):
                     for w in [self._samp_seed_row, self._samp_temp_row, self._samp_topk_frame, self._samp_topp_frame, self._samp_rp_frame]:
-                        try: w.pack(fill="x", pady=(2, 0))
+                        try: w.pack(fill="both", pady=(2, 0))
                         except Exception: pass
                 elif not enabled and hasattr(self, '_update_command'):
                     for w in [self._samp_seed_row, self._samp_temp_row, self._samp_topk_frame, self._samp_topp_frame, self._samp_rp_frame]:
