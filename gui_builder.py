@@ -22,6 +22,7 @@ class FlagConfig:
         self.low_vram = False         # mutually exclusive with mlock.
         self.mlock = False            # mutually exclusive with low-vram.
         self.ctx_size_enabled = False  # toggle to include --ctx-size in command.
+        self.ctx_size_value = 512       # stored ctx-size number when enabled.
         self.n_gpu_layers = -1         # -1 means auto-detect by GPU driver; range 0-99.
 
         self.host = "0.0.0.0"          # bind all interfaces (local LAN access).
@@ -56,7 +57,7 @@ class FlagConfig:
 
         # Context size (only when explicitly enabled by user toggle).
         if self.ctx_size_enabled:
-            ctx_val = max(2, min(int(str(self._safe_int("ctx", 512))), 8192))
+            ctx_val = max(2, min(int(str(self.ctx_size_value)), 999999999))
             parts.append(f"--ctx-size {ctx_val}")
 
         # Server settings — always included.
@@ -235,8 +236,6 @@ class LlamaServerGUI:
         # Context size toggle and input.
         def _ctx_toggle_wrapper(*_):
             try:
-                if not self.config.ctx_size_enabled:
-                    iv_ctx_enabled.set(True)
                 _on_ctx_enabled_change()
                 self._update_command()
             except Exception:
@@ -451,9 +450,10 @@ class LlamaServerGUI:
         iv_ctx_var = tk.IntVar(value=512)
 
         def _on_ctx_val(*_):
-            val = max(2, min(int(iv_ctx_var.get()), 8192)) if iv_ctx_var.get() else 512
+            val = max(2, min(int(iv_ctx_var.get()), 999999999)) if iv_ctx_var.get() else 512
             iv_ctx_var.set(val)
             self.config.ctx_size_enabled = bool(iv_ctx_enabled.get())
+            self.config.ctx_size_value = val
 
         ctx_label = ttk.Label(ctx_frame, text="Ctx Size")
         entry_c = ttk.Entry(ctx_frame, textvariable=iv_ctx_var, width=8)
@@ -463,16 +463,16 @@ class LlamaServerGUI:
         def _ctx_trace_wrapper(*_):
             self.config.ctx_size_enabled = bool(iv_ctx_enabled.get())
 
-        iv_ctx_enabled.trace_add("write", lambda *_: (_on_ctx_change(), _ctx_trace_wrapper(), self._update_command()))
-        def _iv_ctx_var_trace(*_):
+        def _ctx_value_trace(*_):
             try:
+                val = max(2, min(int(iv_ctx_var.get()), 999999999)) if iv_ctx_var.get() else 512
+                self.config.ctx_size_value = val
                 self.config.ctx_size_enabled = bool(iv_ctx_enabled.get())
-                _on_ctx_val()
-                self._update_command()
             except Exception:
                 pass
 
-        iv_ctx_var.trace_add("write", lambda *_: (_iv_ctx_var_trace(),))
+        iv_ctx_enabled.trace_add("write", lambda *_: (_on_ctx_change(), _ctx_trace_wrapper(), _ctx_value_trace(), self._update_command()))
+        iv_ctx_var.trace_add("write", lambda *_: (_ctx_value_trace(), self._update_command()))
 
         # Right column: GPU Layers.
         gpu_frame = ttk.Frame(frame)
