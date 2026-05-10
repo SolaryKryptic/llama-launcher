@@ -15,6 +15,12 @@ root.bind("<Button-4>", _no_scroll)   # macOS trackpad
 root.bind("<Button-5>", _no_scroll)   # macOS trackpad
 
 root.title("llama-server CLI Generator")
+# Set fixed startup size, centered on screen.
+screen_w = root.winfo_screenwidth()
+screen_h = root.winfo_screenheight()
+x_pos = max(0, (screen_w - 764) // 2)
+y_pos = max(0, (screen_h - 593) // 2)
+root.geometry(f"764x593+{x_pos}+{y_pos}")
 # Grid layout with sticky="nswe" makes all widgets fill the window.
 if sys.platform == "darwin":  # macOS: native WM supports -zoomed natively
     root.attributes('-zoomed', True)
