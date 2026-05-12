@@ -19,8 +19,8 @@ class FlagConfig:
 
     def __init__(self):
         self.model_path = ""          # set via browse dialog.
-        self.low_vram = False         # mutually exclusive with mlock.
-        self.mlock = False            # mutually exclusive with low-vram.
+        self.no_mmap = False          # disables memory-mapped file loading.
+        self.mlock = False            # mutually exclusive with no-mmap.
         self.ctx_size_enabled = False  # toggle to include --ctx-size in command.
         self.ctx_size_value = 512       # stored ctx-size number when enabled.
         self.n_gpu_layers = -1         # -1 means auto-detect by GPU driver; range 0-99.
@@ -43,12 +43,12 @@ class FlagConfig:
 
         model_path = self.model_path.strip()
         if model_path:
-            parts.append(f'--model "{model_path}"')
+            parts.append(f'-m "{model_path}"')
 
-        # Mutually exclusive Low VRAM / MLock — only one can be active at a time.
-        if self.low_vram and not self.mlock:
-            parts.append("--low-vram")
-        elif self.mlock and not self.low_vram:
+        # Mutually exclusive No-MMAP / MLock — only one can be active at a time.
+        if self.no_mmap and not self.mlock:
+            parts.append("--no-mmap")
+        elif self.mlock and not self.no_mmap:
             parts.append("--mlock")
 
         # GPU layers (always included in the generated command).
@@ -113,7 +113,7 @@ class LlamaServerGUI:
         # Create all Tk variables (StringVar / IntVar) so every widget change triggers live updates.
         sv_model_path = tk.StringVar(value="")                    # model path display var.
         iv_auto_gpu = tk.IntVar(value=-1)                         # n-gpu-layers (-1=auto, 0-99).
-        lv_bool_low_vram = tk.BooleanVar(value=False)             # low-vram toggle state variable (boolean).
+        lv_bool_no_mmap = tk.BooleanVar(value=False)              # no-mmap toggle state variable (boolean).
         ml_bool_mlock = tk.BooleanVar(value=False)                # mlock toggle state variable (boolean).
 
         iv_ctx_enabled = tk.BooleanVar(value=False)               # toggle to show ctx-size input.
@@ -133,7 +133,7 @@ class LlamaServerGUI:
         self._vars = {
             "model_path": sv_model_path,
             "n_gpu_layers": iv_auto_gpu,
-            "low_vram": lv_bool_low_vram,
+            "no_mmap": lv_bool_no_mmap,
             "mlock": ml_bool_mlock,
             "ctx_size_enabled": iv_ctx_enabled,
             "host": sv_host,
@@ -152,7 +152,7 @@ class LlamaServerGUI:
         self._tk = {
             "model_path": sv_model_path,
             "n_gpu_layers": iv_auto_gpu,
-            "low_vram": lv_bool_low_vram,
+            "no_mmap": lv_bool_no_mmap,
             "mlock": ml_bool_mlock,
             "ctx_size_enabled": iv_ctx_enabled,
             "host": sv_host,
@@ -170,20 +170,20 @@ class LlamaServerGUI:
         # -----------------------------------------------------------------------
         # Change handlers — update config state and trigger command rebuild.
         # -----------------------------------------------------------------------
-        def _on_low_vram_change(*_):
+        def _on_no_mmap_change(*_):
             try:
-                if lv_bool_low_vram.get():
+                if lv_bool_no_mmap.get():
                     ml_bool_mlock.set(False)
                     self.config.mlock = False
-                self.config.low_vram = bool(lv_bool_low_vram.get())
+                self.config.no_mmap = bool(lv_bool_no_mmap.get())
             except Exception:
                 pass
 
         def _on_mlock_change(*_):
             try:
                 if ml_bool_mlock.get():
-                    lv_bool_low_vram.set(False)
-                    self.config.low_vram = False
+                    lv_bool_no_mmap.set(False)
+                    self.config.no_mmap = False
                 self.config.mlock = bool(ml_bool_mlock.get())
             except Exception:
                 pass
@@ -229,7 +229,7 @@ class LlamaServerGUI:
 
 
         # Register all traces on the Tk variables so every change triggers live command update.
-        lv_bool_low_vram.trace_add("write", lambda *_: (_on_low_vram_change(), self._update_command()))
+        lv_bool_no_mmap.trace_add("write", lambda *_: (_on_no_mmap_change(), self._update_command()))
         ml_bool_mlock.trace_add("write", lambda *_: (_on_mlock_change(), self._update_command()))
         iv_auto_gpu.trace_add("write", lambda *_: (_on_gpu_layers_change(), self._update_command()))
 
@@ -406,7 +406,7 @@ class LlamaServerGUI:
 
 
     def _section_model_loading(self, parent):
-        """Model loading section: browse button + Low VRAM / MLock toggles."""
+        """Model loading section: browse button + No-MMAP / MLock toggles."""
         frame = ttk.LabelFrame(parent, text="Model Loading", padding=(8, 6))
         frame.pack(fill="both", padx=6, pady=4)
 
@@ -432,14 +432,14 @@ class LlamaServerGUI:
 
         sv_model_path.trace_add("write", lambda *_: (_update_model_label(),))
 
-        # Low VRAM / MLock checkboxes side-by-side.
+        # No-MMAP / MLock checkboxes side-by-side.
         check_row = ttk.Frame(frame)
         check_row.pack(fill="x", pady=(4, 0))
 
-        lv_bool_low_vram = self._tk["low_vram"]
+        lv_bool_no_mmap = self._tk["no_mmap"]
         ml_bool_mlock = self._tk["mlock"]
 
-        tk.Checkbutton(check_row, text="Low VRAM", variable=lv_bool_low_vram).pack(side="left")
+        tk.Checkbutton(check_row, text="No-MMAP", variable=lv_bool_no_mmap).pack(side="left")
         tk.Checkbutton(check_row, text="MLock", variable=ml_bool_mlock).pack(side="left", padx=(12, 0))
 
 
@@ -568,6 +568,20 @@ class LlamaServerGUI:
         port_frame = ttk.Frame(net_row)
         port_frame.pack(side="left", padx=(24, 0))
         ttk.Label(port_frame, text="Port:").pack(side="left", padx=(0, 4))
+        def _port_spin_safe(*_):
+            try:
+                val = int(iv_port.get())
+                if not (1 <= val <= 65535): return
+                iv_port.set(max(1, min(val, 65535)))
+                self.config.port = max(1, min(val, 65535))
+            except (ValueError, TypeError):
+                pass
+        def _port_spin_cmd(*_):
+            try: self._update_command()
+            except Exception:
+                pass
+        iv_port.trace_add("write", lambda *_: (_port_spin_safe(), _port_spin_cmd()))
+
         entry_p = ttk.Spinbox(port_frame, from_=1, to=65535, textvariable=iv_port, width=8)
         entry_p.pack(side="left")
 
