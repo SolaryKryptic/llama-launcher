@@ -62,7 +62,7 @@ class FlagConfig:
 
         # Server settings — always included.
         host = str(self.host).strip() or "0.0.0.0"
-        port = max(1, min(int(str(self._safe_int("port", 8080))), 65535))
+        port = max(1, min(int(str(self.port)), 65535))
         parts.append(f"--host {host}")
         parts.append(f"--port {port}")
 
@@ -207,11 +207,11 @@ class LlamaServerGUI:
 
         def _on_port_change(*_):
             try:
-                val = int(iv_port.get())
-                if not (1 <= val <= 65535): return
+                val = int(iv_port.get()) if iv_port.get() else 8080
                 self.config.port = max(1, min(val, 65535))
             except (ValueError, TypeError):
                 pass
+            self._update_command()
 
         def _on_threads_enabled_change(*_):
             self.config.threads_enabled = bool(iv_threads_enabled.get())
@@ -564,6 +564,7 @@ class LlamaServerGUI:
             val = max(1, min(int(iv_port.get()), 65535)) if iv_port.get() else 8080
             iv_port.set(val)
             self.config.port = val
+            self._update_command()
 
         port_frame = ttk.Frame(net_row)
         port_frame.pack(side="left", padx=(24, 0))
