@@ -14,7 +14,7 @@ root.bind("<MouseWheel>", _no_scroll)  # Windows/Linux
 root.bind("<Button-4>", _no_scroll)   # macOS trackpad
 root.bind("<Button-5>", _no_scroll)   # macOS trackpad
 
-root.title("llama-server CLI Generator")
+root.title("llama-server command generator")
 # Set fixed startup size, centered on screen.
 screen_w = root.winfo_screenwidth()
 screen_h = root.winfo_screenheight()

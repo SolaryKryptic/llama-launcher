@@ -6,6 +6,7 @@ Uses ttk widgets with the 'clam' theme (available on Windows 10/11).
 
 import os
 import json
+import subprocess
 from tkinter import filedialog, messagebox, Tk, Toplevel, StringVar
 import tkinter as tk
 from tkinter import ttk
@@ -429,7 +430,7 @@ class LlamaServerGUI:
 
         # Title label at top of window (bold, larger font).
         title_label = ttk.Label(
-            outer_frame, text="llama-server CLI Generator",
+            outer_frame, text="llama-server command generator", anchor="center",
             font=("Segoe UI", 16, "bold")
         )
         title_label.grid(row=0, column=0, sticky="ew", pady=(8, 4))
@@ -501,6 +502,10 @@ class LlamaServerGUI:
             copy_frame, text="\U0001F4CB Copy", command=self._copy_command
         )
         self._copy_btn.pack(side="right", padx=(0, 4))
+        self._run_btn = ttk.Button(
+            copy_frame, text="\u25B6 Run in CMD", command=self._run_in_cmd
+        )
+        self._run_btn.pack(side="right", padx=(0, 4))
         self._save_btn = ttk.Button(
             copy_frame, text="\U0001F4BE Save as .bat", command=self._save_bat_command
         )
@@ -1053,6 +1058,19 @@ class LlamaServerGUI:
             messagebox.showinfo("Saved", f"Saved as:\n{filepath}")
         except Exception as e:
             messagebox.showerror("Error", f"Could not save file:\n{e}")
+
+    def _run_in_cmd(self):
+        """Copy command to clipboard and run it in a new cmd window."""
+        cmd = self.config.generate_command()
+        self.root.clipboard_clear()
+        self.root.clipboard_append(cmd)
+        try:
+            subprocess.Popen(
+                ["cmd.exe", "/k", cmd],
+                creationflags=subprocess.DETACHED_PROCESS,
+            )
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not run command:\n{e}")
 
 
 
