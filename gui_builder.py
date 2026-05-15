@@ -49,48 +49,48 @@ class FlagConfig:
 
     def generate_command(self):
         """Build the full llama-server CLI command string from current state."""
-        parts = ["llama-server"]
+        parts = ["llama-server.exe"]
 
         model_path = self.model_path.strip()
         if model_path:
-            parts.append(f'-m "{model_path}"')
+            parts.append(f' -m "{model_path}"')
 
         # Mutually exclusive No-MMAP / MLock — only one can be active at a time.
         if self.no_mmap and not self.mlock:
-            parts.append("--no-mmap")
+            parts.append(" --no-mmap")
         elif self.mlock and not self.no_mmap:
-            parts.append("--mlock")
+            parts.append(" --mlock")
 
         # GPU layers (always included in the generated command).
         gpu_str = "auto" if self.n_gpu_layers == -1 else str(self.n_gpu_layers)
-        parts.append(f"--n-gpu-layers {gpu_str}")
+        parts.append(f" -ngl {gpu_str}")
 
         # Flash Attention & Fit On (only when checked).
         if self.flash_attention:
-            parts.append("-fa on")
+            parts.append(" -fa on")
         if self.fit_on:
-            parts.append("--fit-on")
+            parts.append(" --fit-on")
 
         # Batch size, micro batch size, threads (always included; -t omitted when -1).
-        parts.append(f"-b {self.batch_size}")
-        parts.append(f"-ub {self.micro_batch_size}")
+        parts.append(f" -b {self.batch_size}")
+        parts.append(f" -ub {self.micro_batch_size}")
         if self.threads != -1:
-            parts.append(f"-t {self.threads}")
+            parts.append(f" -t {self.threads}")
 
         # Cache types (always included).
-        parts.append(f"-ctk {self.cache_type_k}")
-        parts.append(f"-ctv {self.cache_type_v}")
+        parts.append(f" -ctk {self.cache_type_k}")
+        parts.append(f" -ctv {self.cache_type_v}")
 
         # Context size (only when explicitly enabled by user toggle).
         if self.ctx_size_enabled:
             ctx_val = max(2, min(int(str(self.ctx_size_value)), 999999999))
-            parts.append(f"--ctx-size {ctx_val}")
+            parts.append(f" --ctx-size {ctx_val}")
 
         # Server settings — always included.
         host = str(self.host).strip() or "0.0.0.0"
         port = max(1, min(int(str(self.port)), 65535))
-        parts.append(f"--host {host}")
-        parts.append(f"--port {port}")
+        parts.append(f" --host {host}")
+        parts.append(f" --port {port}")
 
         # Sampling params (always included).
         temp = max(0.05, min(float(str(self.temperature)), 2.0))
@@ -100,14 +100,14 @@ class FlagConfig:
         topp = min(max(float(str(self.top_p)), 0.05), 1.0)
         rp = min(max(float(str(self.repeat_penalty)), 1.0), 3.0)
 
-        parts.append(f"--temp {temp:.2f}")
-        parts.append(f"--min-p {minp:.2f}")
-        parts.append(f"--top-k {topk}")
-        parts.append(f"--presence-penalty {pp:.2f}")
-        parts.append(f"--top-p {topp:.3f}")
-        parts.append(f"--repeat-penalty {rp:.2f}")
+        parts.append(f" --temp {temp:.2f}")
+        parts.append(f" --min-p {minp:.2f}")
+        parts.append(f" --top-k {topk}")
+        parts.append(f" --presence-penalty {pp:.2f}")
+        parts.append(f" --top-p {topp:.3f}")
+        parts.append(f" --repeat-penalty {rp:.2f}")
 
-        return " \\\n    ".join(parts)
+        return "".join(parts)
 
     @staticmethod
     def _safe_int(name, default):
@@ -465,13 +465,17 @@ class LlamaServerGUI:
         root.grid_rowconfigure(0, weight=1)
         root.grid_columnconfigure(0, weight=1)
 
-        # Copy button placed outside the scrollable canvas so it's always visible.
+        # Copy / Save buttons placed outside the scrollable canvas so they're always visible.
         copy_frame = ttk.Frame(outer_frame)
         copy_frame.grid(row=2, column=0, sticky="ew")
         self._copy_btn = ttk.Button(
             copy_frame, text="\U0001F4CB Copy", command=self._copy_command
         )
-        self._copy_btn.pack(side="right")
+        self._copy_btn.pack(side="right", padx=(0, 4))
+        self._save_btn = ttk.Button(
+            copy_frame, text="\U0001F4BE Save as .bat", command=self._save_bat_command
+        )
+        self._save_btn.pack(side="right")
 
         self.canvas.configure(yscrollcommand=scrollbar.set)
         self.canvas.pack(side="left", fill="both", expand=True, pady=(0, 4))
@@ -927,10 +931,29 @@ class LlamaServerGUI:
 
 
     def _copy_command(self):
-        """Copy current command to clipboard with confirmation dialog."""
+        """Copy current command to clipboard."""
         cmd = self.config.generate_command()
         self.root.clipboard_clear()
         self.root.clipboard_append(cmd)
+
+    def _save_bat_command(self):
+        """Prompt user to choose a folder and save the command as a .bat file."""
+        cmd = self.config.generate_command()
+        folder = filedialog.askdirectory(title="Select Folder to Save .bat File")
+        if not folder:
+            return
+        # Use a descriptive name based on the model path (or a default).
+        model_name = os.path.basename(self.config.model_path) if self.config.model_path else "llama-server"
+        filename = model_name + ".bat"
+        filepath = os.path.join(folder, filename)
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write("@echo off\n")
+                f.write(f'"{cmd}"\n')
+                f.write("pause\n")
+            messagebox.showinfo("Saved", f"Saved as:\n{filepath}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not save file:\n{e}")
 
 
 
