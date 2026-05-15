@@ -20,7 +20,7 @@ screen_w = root.winfo_screenwidth()
 screen_h = root.winfo_screenheight()
 x_pos = max(0, (screen_w - 764) // 2)
 y_pos = max(0, (screen_h - 593) // 2)
-root.geometry(f"764x593+{x_pos}+{y_pos}")
+root.geometry(f"764x793+{x_pos}+{y_pos}")
 # Grid layout with sticky="nswe" makes all widgets fill the window.
 if sys.platform == "darwin":  # macOS: native WM supports -zoomed natively
     root.attributes('-zoomed', True)
