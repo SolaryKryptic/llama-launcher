@@ -30,6 +30,16 @@ class FlagConfig:
         self.num_threads = os.cpu_count() or 4   # dynamic default from machine CPU count.
         self.threads_enabled = False    # toggle to include -t/--threads in command.
 
+        self.flash_attention = False    # enable Flash Attention (-fa).
+        self.fit_on = False              # enable --fit-on (GPU VRAM fit).
+
+        self.batch_size = 2048           # batch size for KV cache (-b), range 1–8192.
+        self.micro_batch_size = 512      # micro batch size for memory splitting (-ub), range 1–8192.
+        self.threads = -1                # thread count (-t), -1 means auto-detect.
+
+        self.cache_type_k = "f16"       # KV cache type K, options: f16, f32, q8_0, q4_0, q4_1, iq4_nl.
+        self.cache_type_v = "f16"       # KV cache type V, same options.
+
         self.temperature = 0.8          # sampling temperature.
         self.min_p = 0.0                # minimum-p sampling value (0.0–1.0).
         self.top_k = 40                 # top-k sampling value.
@@ -55,6 +65,22 @@ class FlagConfig:
         gpu_str = "auto" if self.n_gpu_layers == -1 else str(self.n_gpu_layers)
         parts.append(f"--n-gpu-layers {gpu_str}")
 
+        # Flash Attention & Fit On (only when checked).
+        if self.flash_attention:
+            parts.append("-fa on")
+        if self.fit_on:
+            parts.append("--fit-on")
+
+        # Batch size, micro batch size, threads (always included; -t omitted when -1).
+        parts.append(f"-b {self.batch_size}")
+        parts.append(f"-ub {self.micro_batch_size}")
+        if self.threads != -1:
+            parts.append(f"-t {self.threads}")
+
+        # Cache types (always included).
+        parts.append(f"-ctk {self.cache_type_k}")
+        parts.append(f"-ctv {self.cache_type_v}")
+
         # Context size (only when explicitly enabled by user toggle).
         if self.ctx_size_enabled:
             ctx_val = max(2, min(int(str(self.ctx_size_value)), 999999999))
@@ -65,11 +91,6 @@ class FlagConfig:
         port = max(1, min(int(str(self.port)), 65535))
         parts.append(f"--host {host}")
         parts.append(f"--port {port}")
-
-        # Threads (only when explicitly enabled).
-        if self.threads_enabled:
-            threads = max(1, min(int(str(self._safe_int("threads", 4))), 256))
-            parts.append(f"-t {threads}")
 
         # Sampling params (always included).
         temp = max(0.05, min(float(str(self.temperature)), 2.0))
@@ -118,6 +139,21 @@ class LlamaServerGUI:
         ml_bool_mlock = tk.BooleanVar(value=False)                # mlock toggle state variable (boolean).
 
         iv_ctx_enabled = tk.BooleanVar(value=False)               # toggle to show ctx-size input.
+
+        # Flash Attention / Fit On checkboxes.
+        iv_flash_attn = tk.BooleanVar(value=False)
+        iv_fit_on = tk.BooleanVar(value=False)
+
+        # Batch size, micro batch, threads spinboxes.
+        iv_batch_size = tk.IntVar(value=2048)
+        iv_micro_batch = tk.IntVar(value=512)
+        iv_threads_val_new = tk.IntVar(value=-1)
+
+        # Cache type K / V dropdowns.
+        CACHE_TYPES = ["f16", "f32", "q8_0", "q4_0", "q4_1", "iq4_nl"]
+        sv_cache_k = tk.StringVar(value="f16")
+        sv_cache_v = tk.StringVar(value="f16")
+
         sv_host = tk.StringVar(value="0.0.0.0")                   # server host binding address.
         iv_port = tk.IntVar(value=8080)                           # HTTP port (1-65535).
 
@@ -135,6 +171,13 @@ class LlamaServerGUI:
             "no_mmap": lv_bool_no_mmap,
             "mlock": ml_bool_mlock,
             "ctx_size_enabled": iv_ctx_enabled,
+            "flash_attention": iv_flash_attn,
+            "fit_on": iv_fit_on,
+            "batch_size": iv_batch_size,
+            "micro_batch": iv_micro_batch,
+            "threads_val": iv_threads_val_new,
+            "cache_type_k": sv_cache_k,
+            "cache_type_v": sv_cache_v,
             "host": sv_host,
             "port": iv_port,
             "threads_enabled": iv_threads_enabled,
@@ -152,6 +195,13 @@ class LlamaServerGUI:
             "no_mmap": lv_bool_no_mmap,
             "mlock": ml_bool_mlock,
             "ctx_size_enabled": iv_ctx_enabled,
+            "flash_attention": iv_flash_attn,
+            "fit_on": iv_fit_on,
+            "batch_size": iv_batch_size,
+            "micro_batch": iv_micro_batch,
+            "threads_val": iv_threads_val_new,
+            "cache_type_k": sv_cache_k,
+            "cache_type_v": sv_cache_v,
             "host": sv_host,
             "port": iv_port,
             "threads_enabled": iv_threads_enabled,
@@ -196,6 +246,55 @@ class LlamaServerGUI:
 
         def _on_ctx_enabled_change(*_):
             self.config.ctx_size_enabled = bool(iv_ctx_enabled.get())
+
+        def _on_flash_attn_change(*_):
+            try:
+                self.config.flash_attention = bool(iv_flash_attn.get())
+            except Exception:
+                pass
+
+        def _on_fit_on_change(*_):
+            try:
+                self.config.fit_on = bool(iv_fit_on.get())
+            except Exception:
+                pass
+
+        def _on_batch_size_change(*_):
+            try:
+                val = int(iv_batch_size.get())
+                self.config.batch_size = max(1, min(val, 8192))
+            except (ValueError, TypeError):
+                pass
+
+        def _on_micro_batch_change(*_):
+            try:
+                val = int(iv_micro_batch.get())
+                self.config.micro_batch_size = max(1, min(val, 8192))
+            except (ValueError, TypeError):
+                pass
+
+        def _on_threads_new_change(*_):
+            try:
+                val = int(iv_threads_val_new.get())
+                self.config.threads = max(-1, min(val, 128))
+            except (ValueError, TypeError):
+                pass
+
+        def _on_cache_k_change(*_):
+            try:
+                val = sv_cache_k.get()
+                if val in CACHE_TYPES:
+                    self.config.cache_type_k = val
+            except Exception:
+                pass
+
+        def _on_cache_v_change(*_):
+            try:
+                val = sv_cache_v.get()
+                if val in CACHE_TYPES:
+                    self.config.cache_type_v = val
+            except Exception:
+                pass
 
         def _on_host_change(*_):
             self.config.host = sv_host.get() or "0.0.0.0"
@@ -265,8 +364,18 @@ class LlamaServerGUI:
                 pass
         iv_threads_enabled.trace_add("write", lambda *_: (_threads_toggle_wrapper(),))
 
+        # Flash Attention / Fit On traces.
+        iv_flash_attn.trace_add("write", lambda *_: (_on_flash_attn_change(), self._update_command()))
+        iv_fit_on.trace_add("write", lambda *_: (_on_fit_on_change(), self._update_command()))
 
+        # Batch size / micro batch / threads traces.
+        iv_batch_size.trace_add("write", lambda *_: (_on_batch_size_change(), self._update_command()))
+        iv_micro_batch.trace_add("write", lambda *_: (_on_micro_batch_change(), self._update_command()))
+        iv_threads_val_new.trace_add("write", lambda *_: (_on_threads_new_change(), self._update_command()))
 
+        # Cache type K / V traces.
+        sv_cache_k.trace_add("write", lambda *_: (_on_cache_k_change(), self._update_command()))
+        sv_cache_v.trace_add("write", lambda *_: (_on_cache_v_change(), self._update_command()))
 
         # Build the entire UI.
         self._build_ui()
@@ -526,18 +635,105 @@ class LlamaServerGUI:
                 pass
 
         iv_auto_gpu.trace_add("write", lambda *_: (_on_spinval(), _gpu_trace_wrapper()))
+
         def _spinvar_safe(*_):
             try:
                 val = int(spinvar.get())
                 if not (-1 <= val <= 99): return
                 self.config.n_gpu_layers = max(-1, min(val, 99))
+                iv_auto_gpu.set(max(-1, min(val, 99)))
                 spinvar.set(max(-1, min(val, 99)))
             except (ValueError, TypeError):
                 pass
-        spinvar.trace_add("write", lambda *_: (_spinvar_safe(), self._update_command()))
+
+        spinvar.trace_add("write", lambda *_: (_spinvar_safe(), _on_gpu_layers_change(), self._update_command()))
 
         ttk.Spinbox(gpu_frame, from_=-1, to=99, textvariable=spinvar, width=5).pack(side="left")
 
+        # Batch size / micro batch / threads change handlers (local to this section).
+        def _on_batch_size_change(*_):
+            try:
+                val = int(iv_batch_size.get())
+                self.config.batch_size = max(1, min(val, 8192))
+            except (ValueError, TypeError):
+                pass
+
+        def _on_micro_batch_change(*_):
+            try:
+                val = int(iv_micro_batch.get())
+                self.config.micro_batch_size = max(1, min(val, 8192))
+            except (ValueError, TypeError):
+                pass
+
+        def _on_threads_new_change(*_):
+            try:
+                val = int(iv_threads_val_new.get())
+                self.config.threads = max(-1, min(val, 128))
+            except (ValueError, TypeError):
+                pass
+
+        # --- Flash Attention / Fit On checkboxes (row 1, full width). ---
+        fa_row = ttk.Frame(frame)
+        fa_row.grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+        iv_flash_attn = self._tk["flash_attention"]
+        iv_fit_on = self._tk["fit_on"]
+        tk.Checkbutton(fa_row, text="Flash Attention (-fa)", variable=iv_flash_attn).pack(side="left")
+        tk.Checkbutton(fa_row, text="Fit On (--fit-on)", variable=iv_fit_on).pack(side="left", padx=(16, 0))
+
+        # --- Batch Size / Micro-Batch / Threads spinboxes (row 2, three columns). ---
+        mb_row = ttk.Frame(frame)
+        mb_row.grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+        iv_batch_size = self._tk["batch_size"]
+        iv_micro_batch = self._tk["micro_batch"]
+        iv_threads_val_new = self._tk["threads_val"]
+
+        def _make_spinbox_factory(var, label, lo, hi, on_change):
+            def _spin_safe(s):
+                def _inner(*_):
+                    try:
+                        val = int(s.get())
+                        if not (lo <= val <= hi): return
+                        var.set(max(lo, min(val, hi)))
+                        s.set(max(lo, min(val, hi)))
+                    except (ValueError, TypeError):
+                        pass
+                return _inner
+            def _spin_cmd(s):
+                def _inner(*_):
+                    try: self._update_command()
+                    except Exception:
+                        pass
+                return _inner
+            return _spin_safe, _spin_cmd, on_change
+
+        for var, label, lo, hi, handler in [
+            (iv_batch_size, "Batch Size", 1, 8192, _on_batch_size_change),
+            (iv_micro_batch, "Micro-Batch", 1, 8192, _on_micro_batch_change),
+            (iv_threads_val_new, "Threads", -1, 128, _on_threads_new_change),
+        ]:
+            col = ttk.Frame(mb_row)
+            col.pack(side="left", padx=(0, 12))
+            ttk.Label(col, text=label).pack(side="left")
+
+            _spin_safe, _spin_cmd, on_change = _make_spinbox_factory(var, label, lo, hi, handler)
+            var.trace_add("write", lambda *_: (_spin_safe(var), on_change(), _spin_cmd(var), self._update_command()))
+            ttk.Spinbox(col, from_=lo, to=hi, textvariable=var, width=7).pack(side="left")
+
+        # --- Cache Type K / V dropdowns (row 3, two columns). ---
+        ct_row = ttk.Frame(frame)
+        ct_row.grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+        sv_cache_k = self._tk["cache_type_k"]
+        sv_cache_v = self._tk["cache_type_v"]
+
+        for var, label in [(sv_cache_k, "Cache K"), (sv_cache_v, "Cache V")]:
+            col = ttk.Frame(ct_row)
+            col.pack(side="left", padx=(0, 24))
+            ttk.Label(col, text=label).pack(side="left")
+            cache_menu = ttk.OptionMenu(col, var, var.get(), "f16", "f32", "q8_0", "q4_0", "q4_1", "iq4_nl")
+            cache_menu.pack(side="left")
 
     def _section_server_settings(self, parent):
         """Server settings section (always visible — sensible defaults)."""
