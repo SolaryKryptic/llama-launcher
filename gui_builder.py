@@ -13,30 +13,31 @@ from tkinter import ttk
 
 _CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".llama_server_gui.json")
 
-def _load_last_folder():
-    """Return the previously saved destination folder, or empty string."""
+def _load_config():
+    """Load the full config (last_folder + all flag values) from disk."""
     try:
         with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data.get("last_folder", "")
+            return json.load(f)
     except Exception:
-        return ""
+        return {}
 
-def _save_last_folder(folder):
-    """Persist the given folder path for future sessions."""
+def _save_config(data):
+    """Persist the full config to disk."""
     try:
-        data = {}
-        if os.path.exists(_CONFIG_PATH):
-            try:
-                with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-            except Exception:
-                pass
-        data["last_folder"] = folder
         with open(_CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
     except Exception:
         pass
+
+def _load_last_folder():
+    """Return the previously saved destination folder, or empty string."""
+    return _load_config().get("last_folder", "")
+
+def _save_last_folder(folder):
+    """Persist the given folder path for future sessions."""
+    data = _load_config()
+    data["last_folder"] = folder
+    _save_config(data)
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +148,40 @@ class FlagConfig:
         except (ValueError, TypeError):
             return default
 
+    def to_dict(self):
+        """Return a dict of all mutable flag state for persistence."""
+        return {
+            "model_path": self.model_path,
+            "no_mmap": self.no_mmap,
+            "mlock": self.mlock,
+            "ctx_size_enabled": self.ctx_size_enabled,
+            "ctx_size_value": self.ctx_size_value,
+            "n_gpu_layers": self.n_gpu_layers,
+            "host": self.host,
+            "port": self.port,
+            "num_threads": self.num_threads,
+            "threads_enabled": self.threads_enabled,
+            "flash_attention": self.flash_attention,
+            "fit_on": self.fit_on,
+            "batch_size": self.batch_size,
+            "micro_batch_size": self.micro_batch_size,
+            "threads": self.threads,
+            "cache_type_k": self.cache_type_k,
+            "cache_type_v": self.cache_type_v,
+            "temperature": self.temperature,
+            "min_p": self.min_p,
+            "top_k": self.top_k,
+            "presence_penalty": self.presence_penalty,
+            "top_p": self.top_p,
+            "repeat_penalty": self.repeat_penalty,
+        }
+
+    def from_dict(self, d):
+        """Restore mutable flag state from a saved dict."""
+        for key, val in d.items():
+            if hasattr(self, key):
+                setattr(self, key, val)
+
 
 # ---------------------------------------------------------------------------
 # UI builder — all ttk widget frames returned as methods.
@@ -161,6 +196,9 @@ class LlamaServerGUI:
         self.root = root
         self.config = FlagConfig()
         self._last_folder = _load_last_folder()
+
+        # Save config on window close.
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Create all Tk variables (StringVar / IntVar) so every widget change triggers live updates.
         sv_model_path = tk.StringVar(value="")                    # model path display var.
@@ -241,6 +279,15 @@ class LlamaServerGUI:
             "top_p": sv_topp,
             "repeat_penalty": sv_rp,
         }
+
+        # -----------------------------------------------------------------------
+        # Load saved config.
+        # -----------------------------------------------------------------------
+        saved = _load_config()
+        saved_flags = saved.pop("flags", {})
+        if saved_flags:
+            self.config.from_dict(saved_flags)
+        self._restore_vars(saved_flags)
 
         # -----------------------------------------------------------------------
         # Change handlers — update config state and trigger command rebuild.
@@ -416,6 +463,96 @@ class LlamaServerGUI:
 # Each section method creates a LabelFrame with its widgets and packs it into *parent*.
 # Live command generation is triggered by Tk variable traces on every input field.
 # ---------------------------------------------------------------------------
+
+    def _on_close(self):
+        """Save config (flags + folder) before closing."""
+        try:
+            data = _load_config()
+            data["flags"] = self.config.to_dict()
+            data["last_folder"] = self._last_folder
+            _save_config(data)
+        except Exception:
+            pass
+        self.root.destroy()
+
+    def _restore_vars(self, saved_flags):
+        """Set Tk variable values to match saved flag state."""
+        tk = self._tk
+        if "n_gpu_layers" in saved_flags:
+            try:
+                tk["n_gpu_layers"].set(int(saved_flags["n_gpu_layers"]))
+            except (ValueError, TypeError):
+                pass
+        if "ctx_size_enabled" in saved_flags:
+            try:
+                tk["ctx_size_enabled"].set(bool(saved_flags["ctx_size_enabled"]))
+            except (ValueError, TypeError):
+                pass
+        if "flash_attention" in saved_flags:
+            try:
+                tk["flash_attention"].set(bool(saved_flags["flash_attention"]))
+            except (ValueError, TypeError):
+                pass
+        if "fit_on" in saved_flags:
+            try:
+                tk["fit_on"].set(bool(saved_flags["fit_on"]))
+            except (ValueError, TypeError):
+                pass
+        if "batch_size" in saved_flags:
+            try:
+                tk["batch_size"].set(int(saved_flags["batch_size"]))
+            except (ValueError, TypeError):
+                pass
+        if "micro_batch" in saved_flags:
+            try:
+                tk["micro_batch"].set(int(saved_flags["micro_batch"]))
+            except (ValueError, TypeError):
+                pass
+        if "threads_val" in saved_flags:
+            try:
+                tk["threads_val"].set(int(saved_flags["threads_val"]))
+            except (ValueError, TypeError):
+                pass
+        if "cache_type_k" in saved_flags:
+            try:
+                tk["cache_type_k"].set(str(saved_flags["cache_type_k"]))
+            except (ValueError, TypeError):
+                pass
+        if "cache_type_v" in saved_flags:
+            try:
+                tk["cache_type_v"].set(str(saved_flags["cache_type_v"]))
+            except (ValueError, TypeError):
+                pass
+        if "host" in saved_flags:
+            try:
+                tk["host"].set(str(saved_flags["host"]))
+            except (ValueError, TypeError):
+                pass
+        if "port" in saved_flags:
+            try:
+                tk["port"].set(int(saved_flags["port"]))
+            except (ValueError, TypeError):
+                pass
+        if "temperature" in saved_flags:
+            try:
+                tk["temperature"].set(float(saved_flags["temperature"]))
+            except (ValueError, TypeError):
+                pass
+        if "top_k" in saved_flags:
+            try:
+                tk["top_k"].set(int(saved_flags["top_k"]))
+            except (ValueError, TypeError):
+                pass
+        if "top_p" in saved_flags:
+            try:
+                tk["top_p"].set(float(saved_flags["top_p"]))
+            except (ValueError, TypeError):
+                pass
+        if "repeat_penalty" in saved_flags:
+            try:
+                tk["repeat_penalty"].set(float(saved_flags["repeat_penalty"]))
+            except (ValueError, TypeError):
+                pass
 
     def _build_ui(self):
         """Construct all sections and pack them into a scrollable canvas."""
