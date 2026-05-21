@@ -68,6 +68,9 @@ class FlagConfig:
         self.threads = -1                # thread count (-t), -1 means auto-detect
         self.thread_batch = 0              # thread-batch (-tb), 0 means unset
 
+        self.spec_enabled = False           # toggle to enable speculative decoding
+        self.spec_type = "ngram-mod"         # spec strategy: ngram-mod or draft-mtp
+
         self.cache_type_k = "f16"       # KV cache type K, options: f16, f32, q8_0, q4_0, q4_1, iq4_nl
         self.cache_type_v = "f16"       # KV cache type V, same options
 
@@ -111,6 +114,10 @@ class FlagConfig:
         # Thread batch (only when set to non-zero)
         if self.thread_batch > 0:
             parts.append(f" -tb {self.thread_batch}")
+
+        # Speculative decoding (only when enabled)
+        if self.spec_enabled:
+            parts.append(f" --spec-type {self.spec_type}")
 
         # Cache types are always included
         parts.append(f" -ctk {self.cache_type_k}")
@@ -168,6 +175,8 @@ class FlagConfig:
             "threads_enabled": self.threads_enabled,
             "flash_attention": self.flash_attention,
             "fit_on": self.fit_on,
+            "spec_enabled": self.spec_enabled,
+            "spec_type": self.spec_type,
             "batch_size": self.batch_size,
             "micro_batch_size": self.micro_batch_size,
             "threads": self.threads,
@@ -216,6 +225,9 @@ class LlamaServerGUI:
         iv_flash_attn = tk.BooleanVar(value=False)
         iv_fit_on = tk.BooleanVar(value=False)
 
+        # Speculative decoding toggle
+        iv_spec_enabled = tk.BooleanVar(value=False)
+
         # Batch size, micro batch, threads spinboxes
         iv_batch_size = tk.IntVar(value=2048)
         iv_micro_batch = tk.IntVar(value=512)
@@ -246,6 +258,7 @@ class LlamaServerGUI:
             "ctx_size_enabled": iv_ctx_enabled,
             "flash_attention": iv_flash_attn,
             "fit_on": iv_fit_on,
+            "spec_enabled": iv_spec_enabled,
             "batch_size": iv_batch_size,
             "micro_batch": iv_micro_batch,
             "threads_val": iv_threads_val_new,
@@ -271,6 +284,7 @@ class LlamaServerGUI:
             "ctx_size_enabled": iv_ctx_enabled,
             "flash_attention": iv_flash_attn,
             "fit_on": iv_fit_on,
+            "spec_enabled": iv_spec_enabled,
             "batch_size": iv_batch_size,
             "micro_batch": iv_micro_batch,
             "threads_val": iv_threads_val_new,
@@ -291,8 +305,13 @@ class LlamaServerGUI:
         saved = _load_config()
         saved_flags = saved.pop("flags", {})
         if saved_flags:
+            import sys as _sys2
+            print(f"DEBUG from_dict flags keys: {list(saved_flags.keys())}", file=_sys2.stderr)
+            print(f"DEBUG spec_type in flags: {'spec_type' in saved_flags}, val={saved_flags.get('spec_type')!r}", file=_sys2.stderr)
             self.config.from_dict(saved_flags)
+            print(f"DEBUG after from_dict spec_type={self.config.spec_type!r}", file=_sys2.stderr)
         self._restore_vars(saved_flags)
+        print(f"DEBUG after restore spec_type={self.config.spec_type!r}", file=_sys2.stderr)
 
         # Change handlers — update config state and trigger command rebuild
         def _on_no_mmap_change(*_):
@@ -448,6 +467,16 @@ class LlamaServerGUI:
         iv_flash_attn.trace_add("write", lambda *_: (_on_flash_attn_change(), self._update_command()))
         iv_fit_on.trace_add("write", lambda *_: (_on_fit_on_change(), self._update_command()))
 
+        def _save_on_close(*_):
+            try:
+                data = _load_config()
+                data["flags"] = self.config.to_dict()
+                data["last_folder"] = self._last_folder
+                _save_config(data)
+            except Exception:
+                pass
+        iv_spec_enabled.trace_add("write", lambda *_: (self.config.__setattr__("spec_enabled", bool(iv_spec_enabled.get())), self._update_command(), _save_on_close()))
+
         # Batch size, micro batch, and threads traces
         iv_batch_size.trace_add("write", lambda *_: (_on_batch_size_change(), self._update_command()))
         iv_micro_batch.trace_add("write", lambda *_: (_on_micro_batch_change(), self._update_command()))
@@ -499,6 +528,16 @@ class LlamaServerGUI:
         if "fit_on" in saved_flags:
             try:
                 tk["fit_on"].set(bool(saved_flags["fit_on"]))
+            except (ValueError, TypeError):
+                pass
+        if "spec_enabled" in saved_flags:
+            try:
+                tk["spec_enabled"].set(bool(saved_flags["spec_enabled"]))
+            except (ValueError, TypeError):
+                pass
+        if "spec_type" in saved_flags:
+            try:
+                self.config.spec_type = str(saved_flags["spec_type"])
             except (ValueError, TypeError):
                 pass
         if "batch_size" in saved_flags:
@@ -867,9 +906,37 @@ class LlamaServerGUI:
         tk.Checkbutton(fa_row, text="Flash Attention (-fa)", variable=iv_flash_attn).pack(side="left")
         tk.Checkbutton(fa_row, text="Fit On (--fit-on)", variable=iv_fit_on).pack(side="left", padx=(16, 0))
 
-        # --- Batch Size, Micro-Batch, and Threads spinboxes (row 2, three columns) ---
+        # --- Speculative Decoding (row 2, full width) ---
+        spec_row = ttk.Frame(frame)
+        spec_row.grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+        iv_spec_enabled = self._tk["spec_enabled"]
+        import sys as _sys3
+        print(f"DEBUG UI spec_type={self.config.spec_type!r}", file=_sys3.stderr)
+        sv_spec_type = tk.StringVar(value=self.config.spec_type)
+        def _on_spec_type_change(*_):
+            try:
+                val = sv_spec_type.get()
+                if val in ("ngram-mod", "draft-mtp"):
+                    self.config.spec_type = val
+            except Exception:
+                pass
+        def _save_on_change(*_):
+            try:
+                data = _load_config()
+                data["flags"] = self.config.to_dict()
+                data["last_folder"] = self._last_folder
+                _save_config(data)
+            except Exception:
+                pass
+        sv_spec_type.trace_add("write", lambda *_: (_on_spec_type_change(), self._update_command(), _save_on_change()))
+
+        tk.Checkbutton(spec_row, text="Speculative Decoding", variable=iv_spec_enabled).pack(side="left")
+        ttk.OptionMenu(spec_row, sv_spec_type, "ngram-mod", "ngram-mod", "draft-mtp").pack(side="left", padx=(8, 0))
+
+        # --- Batch Size, Micro-Batch, and Threads spinboxes (row 3, three columns) ---
         mb_row = ttk.Frame(frame)
-        mb_row.grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        mb_row.grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         iv_batch_size = self._tk["batch_size"]
         iv_micro_batch = self._tk["micro_batch"]
@@ -909,9 +976,9 @@ class LlamaServerGUI:
             var.trace_add("write", lambda *_: (_spin_safe(var), on_change(), _spin_cmd(var), self._update_command()))
             ttk.Spinbox(col, from_=lo, to=hi, textvariable=var, width=7).pack(side="left")
 
-        # --- Cache Type K and V dropdowns (row 3, two columns) ---
+        # --- Cache Type K and V dropdowns (row 4, two columns) ---
         ct_row = ttk.Frame(frame)
-        ct_row.grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        ct_row.grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         sv_cache_k = self._tk["cache_type_k"]
         sv_cache_v = self._tk["cache_type_v"]
