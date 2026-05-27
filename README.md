@@ -18,7 +18,7 @@ Point-and-click interface to configure and generate `llama-server` command-line 
 - **GPU Layers**: Spinbox (-1=auto-detect, 0–99 explicit), always included in generated command
 - **Context Size**: Toggle + numeric input (2–999999999)
 - **Flash Attention**: Enable with `-fa on` flag
-- **Fit On**: GPU VRAM fit mode via `--fit-on`
+- **Fit On**: GPU VRAM fit mode via `--fit on`
 - **Batch Size**: Spinbox 1–8192 (`-b`)
 - **Micro-Batch Size**: Memory splitting via `-ub` (1–8192)
 - **Threads**: Override CPU thread count (-1=auto, up to 128)
