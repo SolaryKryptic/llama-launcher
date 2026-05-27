@@ -52,8 +52,7 @@ class FlagConfig:
         self.model_path = ""          # set via browse dialog
         self.no_mmap = False          # disables memory-mapped file loading
         self.mlock = False            # mutually exclusive with no-mmap
-        self.ctx_size_enabled = False  # toggle to include --ctx-size in command
-        self.ctx_size_value = 512       # stored ctx-size number when enabled
+        self.ctx_size_value = 512       # context size value
         self.n_gpu_layers = -1         # -1 means auto-detect by GPU driver; range 0-99
 
         self.host = "0.0.0.0"          # bind all interfaces (local LAN access)
@@ -125,9 +124,8 @@ class FlagConfig:
         parts.append(f" -ctv {self.cache_type_v}")
 
         # Add context size only when the toggle is enabled
-        if self.ctx_size_enabled:
-            ctx_val = max(2, min(int(str(self.ctx_size_value)), 999999999))
-            parts.append(f" --ctx-size {ctx_val}")
+        ctx_val = max(2, min(int(str(self.ctx_size_value)), 999999999))
+        parts.append(f" --ctx-size {ctx_val}")
 
         # Server settings always included
         host = str(self.host).strip() or "0.0.0.0"
@@ -167,7 +165,6 @@ class FlagConfig:
             "model_path": self.model_path,
             "no_mmap": self.no_mmap,
             "mlock": self.mlock,
-            "ctx_size_enabled": self.ctx_size_enabled,
             "ctx_size_value": self.ctx_size_value,
             "n_gpu_layers": self.n_gpu_layers,
             "host": self.host,
@@ -351,9 +348,6 @@ class LlamaServerGUI:
             except (ValueError, TypeError, tk.TclError):
                 pass
 
-        def _on_ctx_enabled_change(*_):
-            self.config.ctx_size_enabled = bool(iv_ctx_enabled.get())
-
         def _on_flash_attn_change(*_):
             try:
                 self.config.flash_attention = bool(iv_flash_attn.get())
@@ -440,13 +434,7 @@ class LlamaServerGUI:
         iv_auto_gpu.trace_add("write", lambda *_: (_on_gpu_layers_change(), self._update_command()))
 
         # Context size toggle and input
-        def _ctx_toggle_wrapper(*_):
-            try:
-                _on_ctx_enabled_change()
-                self._update_command()
-            except Exception:
-                pass
-        iv_ctx_enabled.trace_add("write", lambda *_: (_ctx_toggle_wrapper(),))
+
 
         def _host_trace_wrapper(*_):
             try:
@@ -529,11 +517,7 @@ class LlamaServerGUI:
                 tk["n_gpu_layers"].set(int(saved_flags["n_gpu_layers"]))
             except (ValueError, TypeError):
                 pass
-        if "ctx_size_enabled" in saved_flags:
-            try:
-                tk["ctx_size_enabled"].set(bool(saved_flags["ctx_size_enabled"]))
-            except (ValueError, TypeError):
-                pass
+
         if "flash_attention" in saved_flags:
             try:
                 tk["flash_attention"].set(bool(saved_flags["flash_attention"]))
@@ -795,23 +779,6 @@ class LlamaServerGUI:
         ctx_frame = ttk.Frame(frame)
         ctx_frame.grid(row=0, column=0, sticky="nsew")
 
-        iv_ctx_enabled = self._tk["ctx_size_enabled"]
-
-        def _on_ctx_change(*_):
-            enabled = bool(iv_ctx_enabled.get())
-            if hasattr(self, '_ctx_input_widgets'):
-                for w in self._ctx_input_widgets:
-                    if enabled and not w.winfo_viewable():
-                        w.pack()
-                    elif not enabled and w.winfo_viewable():
-                        w.pack_forget()
-
-        # Context toggle checkbox
-        tk.Checkbutton(ctx_frame, text="Enable context size", variable=iv_ctx_enabled).pack(side="left")
-
-        # Entry and label for ctx-size value, shown only when enabled
-        self._ctx_input_widgets = []  # track widgets that need packing or unpacking
-
         iv_ctx_var = tk.IntVar(value=512)
 
         def _on_ctx_val(*_):
@@ -819,29 +786,21 @@ class LlamaServerGUI:
                 raw = iv_ctx_var.get()
                 val = max(2, min(int(raw), 999999999)) if raw else 512
                 iv_ctx_var.set(val)
-                self.config.ctx_size_enabled = bool(iv_ctx_enabled.get())
                 self.config.ctx_size_value = val
             except (ValueError, TypeError, tk.TclError):
                 pass
 
-        ctx_label = ttk.Label(ctx_frame, text="Ctx Size")
-        entry_c = ttk.Entry(ctx_frame, textvariable=iv_ctx_var, width=8)
-        for w in [ctx_label, entry_c]:
-            self._ctx_input_widgets.append(w)
-
-        def _ctx_trace_wrapper(*_):
-            self.config.ctx_size_enabled = bool(iv_ctx_enabled.get())
+        ttk.Label(ctx_frame, text="Ctx Size").pack(side="left")
+        ttk.Entry(ctx_frame, textvariable=iv_ctx_var, width=8).pack(side="left", padx=(4, 0))
 
         def _ctx_value_trace(*_):
             try:
                 raw = iv_ctx_var.get()
                 val = max(2, min(int(raw), 999999999)) if raw else 512
                 self.config.ctx_size_value = val
-                self.config.ctx_size_enabled = bool(iv_ctx_enabled.get())
             except (ValueError, TypeError, tk.TclError):
                 pass
 
-        iv_ctx_enabled.trace_add("write", lambda *_: (_on_ctx_change(), _ctx_trace_wrapper(), _ctx_value_trace(), self._update_command()))
         iv_ctx_var.trace_add("write", lambda *_: (_ctx_value_trace(), self._update_command()))
 
         # Right column holds GPU layer settings
