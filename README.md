@@ -57,9 +57,7 @@ Point-and-click interface to configure and generate `llama-server` command-line 
 
 ## Usage
 
-```bash
-python main.py
-```
+Download and run .exe file, app window will open shortly
 
 The application window opens centered on your screen. Configure settings then copy the generated command from the bottom panel, run it in a seperate CMD window straight from the app, or save it as a .bat for one-click loading.
 
