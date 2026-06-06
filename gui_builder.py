@@ -7,13 +7,14 @@ Uses ttk widgets with the 'clam' theme (available on Windows 10/11).
 import os
 import json
 import subprocess
+import webbrowser
 from tkinter import filedialog, messagebox, Tk, Toplevel, StringVar
 import tkinter as tk
 from tkinter import ttk
 from hardwarescanner import scan_hardware
 import sys as _sys2
 
-_CONFIG_PATH = os.path.join(os.getcwd(), ".llama_server_gui.json")
+_CONFIG_PATH = os.path.join(os.getcwd(), "llama_gui_data.json")
 
 def _load_config():
     """Load the full config (last_folder + all flag values) from disk."""
@@ -96,9 +97,9 @@ class FlagConfig:
         elif self.mlock and not self.no_mmap:
             parts.append(" --mlock")
 
-        # GPU layers (always included in the generated command)
-        gpu_str = "auto" if self.n_gpu_layers == -1 else str(self.n_gpu_layers)
-        parts.append(f" -ngl {gpu_str}")
+        # GPU layers (only when set to non-negative value; -1 means driver-default)
+        if self.n_gpu_layers >= 0:
+            parts.append(f" -ngl {self.n_gpu_layers}")
 
         # Flash Attention & Fit On (only when checked)
         if self.flash_attention:
@@ -514,6 +515,8 @@ class LlamaServerGUI:
     def _restore_vars(self, saved_flags):
         """Set Tk variable values to match saved flag state."""
         tk = self._tk
+        if "model_path" in saved_flags:
+            tk["model_path"].set(str(saved_flags["model_path"]))
         if "n_gpu_layers" in saved_flags:
             try:
                 tk["n_gpu_layers"].set(int(saved_flags["n_gpu_layers"]))
@@ -696,8 +699,16 @@ class LlamaServerGUI:
 
         # Bind mouse wheel to canvas scrolling
         def _on_mousewheel(event):
-            direction = -1 if event.delta > 0 else 1
-            self.canvas.yview_scroll(int(1.5 * abs(direction)), "units" if direction < 0 else "pages")
+            # Only scroll canvas if there's more to show; otherwise let child widgets handle it
+            bbox = self.canvas.bbox("all")
+            if not bbox:
+                pass
+            can_scroll_up   = self.canvas.yview()[0] > 0
+            can_scroll_down = self.canvas.yview()[1] < 1
+            if (event.delta > 0 and can_scroll_up) or (event.delta <= 0 and can_scroll_down):
+                direction = -1 if event.delta > 0 else 1
+                self.canvas.yview_scroll(int(1.5 * abs(direction)), "units" if direction < 0 else "pages")
+                return "break"
 
         root.bind_all("<MouseWheel>", lambda e: _on_mousewheel(e))
 
@@ -743,8 +754,11 @@ class LlamaServerGUI:
         btn_row = ttk.Frame(frame)
         btn_row.pack(fill="x")
 
-        browse_btn = ttk.Button(btn_row, text="Browse...", command=self._browse_model)
-        browse_btn.pack(side="left", padx=(0, 6))
+        browse_btn = ttk.Button(btn_row, text="Browse local files...", command=self._browse_model)
+        browse_btn.pack(side="left", padx=(0, 2))
+
+        find_btn = ttk.Button(btn_row, text="Find a model online...", command=self._open_huggingface)
+        find_btn.pack(side="left", padx=(0, 6))
 
         # Read-only label shows the selected model path and updates automatically
         self.model_path_label = tk.Label(
@@ -755,11 +769,17 @@ class LlamaServerGUI:
         # Bind trace so the model path label updates when the path changes
         sv_model_path = self._tk["model_path"]
         def _update_model_label(*_):
-            val = sv_model_path.get() or "(no model selected)"
-            self.model_path_label.config(text=val)
-            self.config.model_path = val
+            full_path = sv_model_path.get()
+            if not full_path:
+                display = "(no model selected)"
+            else:
+                name = os.path.basename(full_path)
+                display = "Currently selected: " + (name.rsplit(".gguf", 1)[0] if name.lower().endswith(".gguf") else name)
+            self.model_path_label.config(text=display)
+            self.config.model_path = full_path
 
-        sv_model_path.trace_add("write", lambda *_: (_update_model_label(),))
+        sv_model_path.trace_add("write", lambda *_: (_update_model_label(), self._update_command()))
+        _update_model_label()  # initialise label on startup
 
         # Place No-MMAP and MLock checkboxes side by side
         check_row = ttk.Frame(frame)
@@ -819,8 +839,7 @@ class LlamaServerGUI:
 
         def _on_spinval(*_):
             try:
-                raw = spinvar.get()
-                val = int(raw) if raw else -1
+                val = int(spinvar.get())
                 if not (-1 <= val <= 99): return
                 self.config.n_gpu_layers = max(-1, min(val, 99))
             except (ValueError, TypeError, tk.TclError):
@@ -839,8 +858,7 @@ class LlamaServerGUI:
 
         def _spinvar_safe(*_):
             try:
-                raw = spinvar.get()
-                val = int(raw) if raw else -1
+                val = int(spinvar.get())
                 if not (-1 <= val <= 99): return
                 self.config.n_gpu_layers = max(-1, min(val, 99))
                 iv_auto_gpu.set(max(-1, min(val, 99)))
@@ -848,9 +866,22 @@ class LlamaServerGUI:
             except (ValueError, TypeError, tk.TclError):
                 pass
 
-        spinvar.trace_add("write", lambda *_: (_spinvar_safe(), _on_gpu_layers_change(), self._update_command()))
+        spinvar.trace_add("write", lambda *_: (_spinvar_safe(), self._update_command()))
 
-        ttk.Spinbox(gpu_frame, from_=-1, to=99, textvariable=spinvar, width=5).pack(side="left")
+        spinbox_gpu = ttk.Spinbox(gpu_frame, from_=-1, to=99, textvariable=spinvar, width=5)
+        spinbox_gpu.pack(side="left")
+
+        def _gpu_wheel(event):
+            try:
+                val = int(spinvar.get())
+            except (ValueError, TypeError):
+                return "break"
+            delta = 1 if event.delta > 0 else -1
+            new_val = max(-1, min(99, val + delta))
+            spinvar.set(new_val)
+            return "break"
+
+        spinbox_gpu.bind("<MouseWheel>", _gpu_wheel)
 
         # Batch size, micro batch, and thread handlers local to this section
         def _on_batch_size_change(*_):
@@ -979,6 +1010,11 @@ class LlamaServerGUI:
             ttk.Label(col, text=label).pack(side="left")
             cache_menu = ttk.OptionMenu(col, var, var.get(), "f16", "f32", "q8_0", "q4_0", "q4_1", "iq4_nl")
             cache_menu.pack(side="left")
+
+        # --- Optimise button (row 5, left) ---
+        opt_btn_frame = ttk.Frame(frame)
+        opt_btn_frame.grid(row=5, column=0, sticky="w", pady=(8, 0))
+        ttk.Button(opt_btn_frame, text="Optimise (WIP)", command=self._run_optimiser).pack(side="left")
 
     def _section_server_settings(self, parent):
         """Server settings section (always visible — sensible defaults)."""
@@ -1188,6 +1224,387 @@ class LlamaServerGUI:
         )
         if path:
             self.config.model_path = path
+            self._tk["model_path"].set(path)
+            self._update_command()
+
+    def _open_huggingface(self):
+        """Open the Hugging Face models page in the default browser."""
+        webbrowser.open("https://huggingface.co/models?library=gguf&sort=trending")
+
+    def _validate_prerequisites(self):
+        """Step 3: Check that a model is selected and llama-bench.exe exists.
+        Returns {ok, model_path, bench_exe} or raises on error.
+        """
+        if not self.config.model_path:
+            return {"ok": False, "message": "Please select a model before optimising."}
+
+        # Find llama-bench.exe next to llama-server.exe
+        bench_exe = "llama-bench.exe"
+        return {"ok": True, "model_path": self.config.model_path, "bench_exe": bench_exe}
+
+    def _build_optimiser_params(self):
+        """Build sweep parameters for the new optimiser.
+
+        Returns a dict with thread list, batch sizes, FITT targets,
+        and cache K types to test sequentially.
+        """
+        import itertools as _it
+
+        logical_cores = os.cpu_count() or 4
+        cap_limit = max(1, int(logical_cores * 0.75))
+        step_size = max(1, int(logical_cores * 0.25))
+        threads_list = [t for t in range(step_size, cap_limit + 1, step_size)]
+        if cap_limit not in threads_list:
+            threads_list.append(cap_limit)
+
+        batch_sizes = [512, 1024, 2048]
+        fitt_targets = [1024, 512, 256]
+        cache_k_types = ["f16", "q8_0", "q4_0"]
+
+        return {
+            "threads": threads_list,
+            "batch_sizes": batch_sizes,
+            "fitt_targets": fitt_targets,
+            "cache_k_types": cache_k_types,
+            "cap_limit": cap_limit,
+            "step_size": step_size,
+            "logical_cores": logical_cores,
+        }
+
+    def _build_bench_cmd(self, bench_exe, model_path, threads=None, batch=None, micro_batch=None,
+                         fitt=None, ctx_size=16384, ctk="f16", ctv="f16", is_base=False):
+        """Build llama-bench command.
+
+        *is_base* runs a naked baseline (no -t/-b/-ub/-fa/-fitt/-ctk/-ctv).
+        Otherwise all parameters are included explicitly.
+        """
+        cmd = [bench_exe, "-m", model_path, "-o", "md", "--no-warmup",
+               "-fitc", str(ctx_size), "-r", "3"]
+        if not is_base:
+            cmd += ["-t", str(threads), "-b", str(batch), "-ub", str(micro_batch),
+                    "-fa", "auto", "-fitt", str(fitt), "-ctk", ctk, "-ctv", ctv]
+        return cmd
+
+    @staticmethod
+    def _parse_bench_results(output):
+        """Parse prompt (pp512) and text-gen (tg128) TPS from llama-bench output."""
+        import re as _re
+        results = {}
+        for line in output.splitlines():
+            if "pp512" in line:
+                parts = [p.strip() for p in line.split("|")]
+                tps = parts[-2].split("\u00b1")[0].strip()
+                tps = _re.sub(r"[^\d.]", "", tps)
+                results["pp512"] = float(tps)
+            elif "tg128" in line:
+                parts = [p.strip() for p in line.split("|")]
+                tps = parts[-2].split("\u00b1")[0].strip()
+                tps = _re.sub(r"[^\d.]", "", tps)
+                results["tg128"] = float(tps)
+        return results
+
+    @staticmethod
+    def _calculate_score(pp, tg, metric_weight=0.5):
+        """Dual-metric weighted score."""
+        return (pp * metric_weight) + (tg * (1.0 - metric_weight))
+
+    def _run_optimisation(self, bench_exe, model_path, progress_var,
+                          label_var, score_var, remaining_var, cancel_flag):
+        """Run the two-stage sequential greedy optimiser + neighbourhood verification.
+
+        Updates Tk variables on the main thread via root.after().
+        Returns final config dict when done (via *final_config_holder*).
+        """
+        import subprocess as _sub
+        import itertools as _it
+        import time as _time
+
+        params = self._build_optimiser_params()
+        ctx_size = 16384
+        metric_weight = 0.5
+
+        def run_one(t=None, b=None, fitt=None, cache_k=None, is_base=False):
+            cmd = self._build_bench_cmd(
+                bench_exe, model_path,
+                threads=t, batch=b, micro_batch=fitt,
+                fitt=fitt, ctx_size=ctx_size,
+                ctk=cache_k, ctv="f16", is_base=is_base)
+            try:
+                proc = _sub.run(
+                    cmd, capture_output=True, text=True, errors="ignore",
+                    timeout=300  # hard cap per run (5 min)
+                )
+                if proc.returncode != 0:
+                    return None, None
+                results = self._parse_bench_results(proc.stdout)
+                pp = results.get("pp512", 0.0)
+                tg = results.get("tg128", 0.0)
+                if pp == 0.0 and tg == 0.0:
+                    return None, None
+                return pp, tg
+            except Exception:
+                return None, None
+
+        def calc(pp, tg):
+            if pp is None or tg is None:
+                return -1.0
+            return self._calculate_score(pp, tg, metric_weight)
+
+        # --- STAGE 1: Sequential greedy screening ---
+        best_threads = params["threads"][-1]
+        best_batch = params["batch_sizes"][0]
+        best_fitt = params["fitt_targets"][0]
+        best_cache_k = params["cache_k_types"][0]
+
+        global_best_score = -1.0
+        global_best_pp = 0.0
+        global_best_tg = 0.0
+
+        total_runs = len(params["threads"]) + len(params["batch_sizes"]) + \
+                     len(params["fitt_targets"]) + len(params["cache_k_types"])
+        elapsed_start = None
+
+        def update_progress(step_name, param_name, value, run_idx):
+            total_runs_count = (
+                len(params["threads"]) + len(params["batch_sizes"])
+                + len(params["fitt_targets"]) + len(params["cache_k_types"])
+                + 6  # approximate neighbourhood grid size
+            )
+            pct = max(0.0, min(run_idx / total_runs_count * 100, 99.9))
+            self.root.after(0, lambda p=pct: progress_var.set(p))
+            self.root.after(0, lambda msg=f"{step_name}: {param_name}={value}": label_var.set(msg))
+            try:
+                now = _time.time()
+                if elapsed_start is not None:
+                    elapsed = now - elapsed_start
+                    avg_per_run = elapsed / run_idx
+                    remaining = int(avg_per_run * (total_runs_count - run_idx))
+                    self.root.after(0, lambda r=remaining: remaining_var.set(f"~{r}s remaining"))
+            except Exception:
+                pass
+
+        # 1. Threads
+        self.root.after(0, lambda: label_var.set("Stage 1 — Optimising threads..."))
+        for t in params["threads"]:
+            if cancel_flag[0]:
+                return None
+            pp, tg = run_one(t=t, b=best_batch, fitt=best_fitt, cache_k=best_cache_k)
+            score = calc(pp, tg)
+            if score > 0:
+                if score >= global_best_score:
+                    global_best_score = score
+                    global_best_pp = pp or 0.0
+                    global_best_tg = tg or 0.0
+                if score >= calc(None, None) or True:  # always track stage best
+                    best_threads = t
+                self.root.after(0, lambda s=f"pp={pp:.2f} tg={tg:.2f}": label_var.set(s))
+                self.root.after(0, lambda sc=score: score_var.set(sc))
+
+        # 2. Batch size
+        self.root.after(0, lambda: label_var.set("Stage 1 — Optimising batch size..."))
+        for b in params["batch_sizes"]:
+            if cancel_flag[0]:
+                return None
+            pp, tg = run_one(t=best_threads, b=b, fitt=best_fitt, cache_k=best_cache_k)
+            score = calc(pp, tg)
+            if score > 0:
+                if score >= global_best_score:
+                    global_best_score = score
+                    global_best_pp = pp or 0.0
+                    global_best_tg = tg or 0.0
+                best_batch = b
+                self.root.after(0, lambda sc=score: score_var.set(sc))
+
+        # 3. FITT target
+        self.root.after(0, lambda: label_var.set("Stage 1 — Optimising FITT target..."))
+        for fitt in params["fitt_targets"]:
+            if cancel_flag[0]:
+                return None
+            pp, tg = run_one(t=best_threads, b=best_batch, fitt=fitt, cache_k=best_cache_k)
+            score = calc(pp, tg)
+            if score > 0:
+                if score >= global_best_score:
+                    global_best_score = score
+                    global_best_pp = pp or 0.0
+                    global_best_tg = tg or 0.0
+                best_fitt = fitt
+                self.root.after(0, lambda sc=score: score_var.set(sc))
+
+        # 4. K Cache type
+        self.root.after(0, lambda: label_var.set("Stage 1 — Optimising K cache type..."))
+        for ck in params["cache_k_types"]:
+            if cancel_flag[0]:
+                return None
+            pp, tg = run_one(t=best_threads, b=best_batch, fitt=best_fitt, cache_k=ck)
+            score = calc(pp, tg)
+            if score > 0:
+                if score >= global_best_score:
+                    global_best_score = score
+                    global_best_pp = pp or 0.0
+                    global_best_tg = tg or 0.0
+                best_cache_k = ck
+                self.root.after(0, lambda sc=score: score_var.set(sc))
+
+        # --- STAGE 2: Neighbourhood verification (batch × fitt) ---
+        def neighbours(current, sweep_list):
+            idx = sweep_list.index(current)
+            nb = [current]
+            if idx > 0: nb.append(sweep_list[idx - 1])
+            if idx < len(sweep_list) - 1: nb.append(sweep_list[idx + 1])
+            return list(set(nb))
+
+        b_nb = neighbours(best_batch, params["batch_sizes"])
+        f_nb = neighbours(best_fitt, params["fitt_targets"])
+        grid = list(_it.product(b_nb, f_nb))
+
+        final_best_score = global_best_score
+        final_best_pp = global_best_pp
+        final_best_tg = global_best_tg
+        final_config = {"threads": best_threads, "batch": best_batch,
+                        "fitt": best_fitt, "cache_k": best_cache_k}
+
+        self.root.after(0, lambda: label_var.set("Stage 2 — Neighbourhood verification..."))
+        for b, ft in grid:
+            if cancel_flag[0]:
+                return None
+            if b == best_batch and ft == best_fitt:
+                continue
+            pp, tg = run_one(t=best_threads, b=b, fitt=ft, cache_k=best_cache_k)
+            score = calc(pp, tg)
+            self.root.after(0, lambda sc=score: score_var.set(sc))
+            if score > final_best_score:
+                final_best_score = score
+                final_best_pp = pp or 0.0
+                final_best_tg = tg or 0.0
+                final_config = {"threads": best_threads, "batch": b,
+                                "fitt": ft, "cache_k": best_cache_k}
+
+        # Return via mutable holder
+        return final_config
+
+    def _show_progress_window(self, model_path, bench_exe):
+        """Show optimisation progress window. Returns final config or None."""
+        import threading as _threading
+
+        win = Toplevel(self.root)
+        win.title("Optimisation in Progress")
+        win.geometry("620x320")
+        win.transient(self.root)
+        win.grab_set()
+
+        label_var = tk.StringVar(value="Preparing...")
+        score_var = tk.DoubleVar(value=0.0)
+        remaining_var = tk.StringVar(value="Calculating...")
+        cancel_flag = [False]
+        final_config_holder = [None]  # mutable container for result
+
+        ttk.Label(win, text="Optimisation in Progress", font=("Segoe UI", 12, "bold")).pack(pady=8)
+        ttk.Label(win, textvariable=label_var).pack()
+        ttk.Label(win, textvariable=remaining_var).pack()
+
+        progress_var = tk.IntVar(value=0)
+        bar = ttk.Progressbar(win, variable=progress_var, maximum=100, mode="determinate")
+        bar.pack(fill="x", padx=20, pady=8)
+
+        def _update_bar():
+            try:
+                val = float(bar.cget("value"))
+            except Exception:
+                return
+            if val < 99.5:
+                win.after(500, _update_bar)
+
+        ttk.Label(win, text="Score so far:", font=("Segoe UI", 9)).pack()
+        score_label = tk.Label(win, textvariable=score_var,
+                               font=("Consolas", 11, "bold"), fg="#27ae60")
+        score_label.pack(pady=4)
+
+        def _on_cancel():
+            cancel_flag[0] = True
+            win.destroy()
+
+        ttk.Button(win, text="Cancel", command=_on_cancel).pack(pady=8)
+
+        def _run_thread():
+            result = self._run_optimisation(
+                bench_exe, model_path,
+                progress_var, label_var, score_var, remaining_var, cancel_flag)
+            final_config_holder[0] = result
+            win.destroy()
+
+        _threading.Thread(target=_run_thread, daemon=True).start()
+        win.wait_window()
+        return final_config_holder[0]
+
+        # Collect results from the JSON file (sweep thread writes it)
+        try:
+            import json as _json
+            with open("optimiser_results.json", "r") as f:
+                return _json.load(f)
+        except Exception:
+            return []
+
+    def _show_results_window(self, final_config):
+        """Show optimisation results: best config and recommended flags."""
+        win = Toplevel(self.root)
+        win.title("Optimisation Results")
+        win.geometry("580x420")
+        win.transient(self.root)
+
+        ttk.Label(win, text="Optimisation Complete", font=("Segoe UI", 13, "bold")).pack(pady=6)
+
+        # Result display
+        text_area = tk.Text(win, width=60, height=14, font=("Consolas", 9), wrap="word")
+        text_area.pack(fill="both", expand=True, padx=10, pady=4)
+
+        lines = [
+            f"Threads:     {final_config['threads']}",
+            f"Batch Size:  {final_config['batch']}",
+            f"FITT Target: {final_config['fitt']}",
+            f"Cache K:     {final_config['cache_k']}",
+            "",
+            "Recommended flags for llama-server:",
+            f"-t {final_config['threads']} -b {final_config['batch']} -ub {final_config['batch']} "
+            f"-ctx 16384 -fitt {final_config['fitt']} -ctk {final_config['cache_k']}",
+        ]
+        text_area.insert("1.0", "\n".join(lines))
+        text_area.configure(state="disabled")
+
+        def _apply():
+            self.config.threads = final_config["threads"]
+            self.config.batch_size = final_config["batch"]
+            self.config.micro_batch_size = final_config["fitt"]
+            self.config.cache_type_k = final_config["cache_k"]
+            # Update Tk variables so the command box refreshes
+            try:
+                self._tk["threads_val"].set(final_config["threads"])
+            except Exception: pass
+            try:
+                self._tk["batch_size"].set(final_config["batch"])
+            except Exception: pass
+            try:
+                self._tk["micro_batch"].set(final_config["fitt"])
+            except Exception: pass
+            try:
+                self._tk["cache_type_k"].set(final_config["cache_k"])
+            except Exception: pass
+            win.destroy()
+
+        def _copy():
+            import tkinter as tk
+            flags = (f"-t {final_config['threads']} -b {final_config['batch']} "
+                     f"-ub {final_config['batch']} -ctx 16384 -fitt {final_config['fitt']} "
+                     f"-ctk {final_config['cache_k']}")
+            self.root.clipboard_clear()
+            self.root.clipboard_append(flags)
+
+        btn_frame = ttk.Frame(win)
+        btn_frame.pack(fill="x", pady=8)
+        ttk.Button(btn_frame, text="Apply Settings", command=_apply).pack(side="right", padx=4)
+        ttk.Button(btn_frame, text="Copy Flags", command=_copy).pack(side="right", padx=4)
+        ttk.Button(btn_frame, text="Close", command=win.destroy).pack(side="right")
+
+
 
     def _update_command(self):
         """Rebuild the generated command and update the display."""
@@ -1197,6 +1614,45 @@ class LlamaServerGUI:
             self.cmd_text.delete('1.0', 'end')
             self.cmd_text.insert('1.0', cmd)
             self.cmd_text.configure(state='disabled')
+
+    def _run_optimiser(self):
+        """Entry point for the new optimiser (sequential greedy + neighbourhood)."""
+        from tkinter import messagebox
+
+        # Warning dialog
+        msg = (
+            "Model Optimisation\n\n"
+            "Your system will be under high load during this process.\n"
+            "Please save your work and close unnecessary applications.\n"
+            "Proceed?"
+        )
+        if not messagebox.askyesno("Optimise System", msg):
+            return
+
+        # Validate prerequisites
+        try:
+            prereq_result = self._validate_prerequisites()
+            if not prereq_result.get("ok"):
+                messagebox.showerror("Prerequisite Error", prereq_result["message"])
+                return
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to validate prerequisites:\n{e}")
+            return
+
+        model_path = prereq_result["model_path"]
+        bench_exe = prereq_result["bench_exe"]
+
+        # Run optimiser
+        try:
+            final_config = self._show_progress_window(model_path, bench_exe)
+        except Exception as e:
+            messagebox.showerror("Error", f"Optimisation failed:\n{e}")
+            return
+
+        if not final_config:
+            messagebox.showinfo("Results", "No valid results collected.")
+            return
+        self._show_results_window(final_config)
 
 
     def _copy_command(self):
@@ -1259,7 +1715,7 @@ class LlamaServerGUI:
         row.pack(fill="x", pady=2)
         ttk.Label(row, text="Folder:").pack(side="left")
         ttk.Entry(row, textvariable=sv_folder, width=35).pack(side="left", fill="x", expand=True, padx=(4, 4))
-        ttk.Button(row, text="Browse...", command=_browse_folder).pack(side="left")
+        ttk.Button(row, text="Browse local files...", command=_browse_folder).pack(side="left")
 
         # Filename row
         row = ttk.Frame(body)
@@ -1307,6 +1763,3 @@ class LlamaServerGUI:
             )
         except Exception as e:
             messagebox.showerror("Error", f"Could not run command:\n{e}")
-
-
-

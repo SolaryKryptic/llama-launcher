@@ -1,0 +1,30 @@
+{
+  "flags": {
+    "model_path": "H:/AI/cHunter789/Qwen3.6-27B-i1-IQ4_XS-GGUF/Qwen3.6-27B.i1-IQ4_XS-attn_qkv-IQ4_XS.gguf",
+    "no_mmap": false,
+    "mlock": false,
+    "ctx_size_value": 512,
+    "n_gpu_layers": -1,
+    "host": "0.0.0.0",
+    "port": 8080,
+    "num_threads": 12,
+    "threads_enabled": false,
+    "flash_attention": false,
+    "fit_on": false,
+    "spec_enabled": false,
+    "spec_type": "ngram-mod",
+    "batch_size": 2048,
+    "micro_batch_size": 255,
+    "threads": -1,
+    "thread_batch": 0,
+    "cache_type_k": "q8_0",
+    "cache_type_v": "q8_0",
+    "temperature": 0.8,
+    "min_p": 0.04,
+    "top_k": 40,
+    "presence_penalty": 0.2,
+    "top_p": 0.75,
+    "repeat_penalty": 1.2
+  },
+  "last_folder": ""
+}
