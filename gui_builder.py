@@ -324,7 +324,7 @@ class LlamaServerGUI:
         try:
             self._hw = scan_hardware()
         except Exception:
-            self._hw = {"CPU": "Unknown", "GPU": "Unknown", "VRAM": "Unknown", "RAM": "Unknown"}
+            self._hw = {"CPU": "Unknown", "GPU": "Unknown", "VRAM": "Unknown", "RAM": "Unknown", "CPU_CORES": 0, "CPU_THREADS": 0}
 
         # Change handlers — update config state and trigger command rebuild
         def _on_no_mmap_change(*_):
@@ -1275,8 +1275,12 @@ class LlamaServerGUI:
         frame = ttk.LabelFrame(parent, text="System Hardware", padding=(8, 6))
         frame.pack(fill="both", padx=6, pady=4)
 
+        cores = self._hw.get('CPU_CORES', '')
+        threads = self._hw.get('CPU_THREADS', '')
+        cores_str = f" ({cores} cores / {threads} threads)" if cores and threads else ""
+
         hw_text = (
-            f"CPU:    {self._hw.get('CPU', 'Unknown')}\n"
+            f"CPU:    {self._hw.get('CPU', 'Unknown')}{cores_str}\n"
             f"GPU:    {self._hw.get('GPU', 'Unknown')}\n"
             f"VRAM:   {self._hw.get('VRAM', 'Unknown')}\n"
             f"RAM:    {self._hw.get('RAM', 'Unknown')}"
