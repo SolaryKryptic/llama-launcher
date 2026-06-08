@@ -44,7 +44,7 @@ Point-and-click interface to configure and generate `llama-server` command-line 
 
 ## Usage
 
-Download and run the `.exe` file, app window will open shortly.
+Download and run the `.exe` file (click "More info" then "Run anyway" if Windows SmartScreen pops up), app window will open shortly.
 
 Configure settings then copy the generated command from the bottom panel, run it in a separate CMD window straight from the app, or save it as a `.bat` for later one-click loading.
 
