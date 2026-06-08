@@ -565,6 +565,21 @@ class LlamaServerGUI:
             except (ValueError, TypeError):
                 pass
 
+        if "no_mmap" in saved_flags:
+            try:
+                tk["no_mmap"].set(bool(saved_flags["no_mmap"]))
+            except (ValueError, TypeError):
+                pass
+        if "mlock" in saved_flags:
+            try:
+                tk["mlock"].set(bool(saved_flags["mlock"]))
+            except (ValueError, TypeError):
+                pass
+        if "no_warmup" in saved_flags:
+            try:
+                tk["no_warmup"].set(bool(saved_flags["no_warmup"]))
+            except (ValueError, TypeError):
+                pass
         if "flash_attention" in saved_flags:
             try:
                 tk["flash_attention"].set(bool(saved_flags["flash_attention"]))

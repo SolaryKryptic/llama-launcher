@@ -3,7 +3,7 @@
     "model_path": "H:/AI/cHunter789/Qwen3.6-27B-i1-IQ4_XS-GGUF/Qwen3.6-27B.i1-IQ4_XS-attn_qkv-IQ4_XS.gguf",
     "no_mmap": true,
     "mlock": true,
-    "no_warmup": true,
+    "no_warmup": false,
     "ctx_size_value": 65536,
     "n_gpu_layers": 99,
     "host": "0.0.0.0",
