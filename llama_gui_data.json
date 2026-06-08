@@ -5,14 +5,14 @@
     "mlock": false,
     "no_warmup": true,
     "ctx_size_value": 65536,
-    "n_gpu_layers": -1,
+    "n_gpu_layers": 99,
     "host": "0.0.0.0",
     "port": 1010,
     "cache_ram": 8000,
     "num_threads": 12,
     "threads_enabled": false,
     "flash_attention": true,
-    "fit_on": true,
+    "fit_on": false,
     "spec_enabled": true,
     "spec_type": "ngram-mod,draft-mtp",
     "spec_draft_n_max": 3,
@@ -26,13 +26,13 @@
     "cache_type_kd": "q4_0",
     "cache_type_vd": "q4_0",
     "temperature": 0.8,
-    "min_p": 0.01,
-    "top_k": 41,
-    "presence_penalty": 0.1,
+    "min_p": 0.0,
+    "top_k": 25,
+    "presence_penalty": 0.0,
     "top_p": 0.95,
-    "repeat_penalty": 1.2
+    "repeat_penalty": 1.0
   },
-  "last_folder": "H:/Model Commands",
-  "window_geometry": "1920x995+460+130",
-  "window_state": "zoomed"
+  "last_folder": "C:/Users/ayush/Desktop",
+  "window_geometry": "958x985+-8+0",
+  "window_state": "normal"
 }

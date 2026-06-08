@@ -714,6 +714,9 @@ class LlamaServerGUI:
 
         outer_frame = ttk.Frame(root, padding=(6, 4))
         outer_frame.grid(row=0, column=0, sticky="nsew")
+        # Ensure the middle (scrollable) row grows but leave space for bottom buttons
+        outer_frame.grid_rowconfigure(1, weight=1)
+        outer_frame.grid_rowconfigure(2, weight=0)
 
         # Title label at the top, bold and larger for clarity
         title_label = ttk.Label(
