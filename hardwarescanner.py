@@ -13,7 +13,17 @@ def scan_hardware():
             # 1. CPU Model
             cpu_out = subprocess.check_output("wmic cpu get name", shell=True).decode().strip()
             hardware["CPU"] = cpu_out.split("\n")[-1].strip()
-            
+
+            # 1b. CPU cores & threads
+            try:
+                cores_out = subprocess.check_output("wmic cpu get NumberOfCores", shell=True).decode().strip()
+                threads_out = subprocess.check_output("wmic cpu get NumberOfLogicalProcessors", shell=True).decode().strip()
+                hardware["CPU_CORES"] = int(cores_out.split("\n")[-1].strip())
+                hardware["CPU_THREADS"] = int(threads_out.split("\n")[-1].strip())
+            except Exception:
+                hardware["CPU_CORES"] = 0
+                hardware["CPU_THREADS"] = 0
+
             # 2. System RAM
             ram_out = subprocess.check_output("wmic computersystem get totalphysicalmemory", shell=True).decode().strip()
             hardware["RAM"] = f"{int(ram_out.split('\n')[-1].strip()) / (1024**3):.2f} GB"

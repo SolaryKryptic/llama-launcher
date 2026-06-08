@@ -72,6 +72,8 @@ class FlagConfig:
 
         self.spec_enabled = False           # toggle to enable speculative decoding
         self.spec_type = "ngram-mod"         # spec strategy: ngram-mod or draft-mtp
+        self.spec_draft_n_max = 0            # --spec-draft-n-max (0 = unset)
+        self.spec_draft_n_min = 0            # --spec-draft-n-min (0 = unset)
 
         self.cache_type_k = "f16"       # KV cache type K, options: f16, f32, q8_0, q4_0, q4_1, iq4_nl
         self.cache_type_v = "f16"       # KV cache type V, same options
@@ -120,6 +122,10 @@ class FlagConfig:
         # Speculative decoding (only when enabled)
         if self.spec_enabled:
             parts.append(f" --spec-type {self.spec_type}")
+            if self.spec_draft_n_max > 0:
+                parts.append(f" --spec-draft-n-max {self.spec_draft_n_max}")
+            if self.spec_draft_n_min > 0:
+                parts.append(f" --spec-draft-n-min {self.spec_draft_n_min}")
 
         # Cache types are always included
         parts.append(f" -ctk {self.cache_type_k}")
@@ -548,6 +554,16 @@ class LlamaServerGUI:
                 self.config.spec_type = str(saved_flags["spec_type"])
             except (ValueError, TypeError):
                 pass
+        if "spec_draft_n_max" in saved_flags:
+            try:
+                self.config.spec_draft_n_max = int(saved_flags["spec_draft_n_max"])
+            except (ValueError, TypeError):
+                pass
+        if "spec_draft_n_min" in saved_flags:
+            try:
+                self.config.spec_draft_n_min = int(saved_flags["spec_draft_n_min"])
+            except (ValueError, TypeError):
+                pass
         if "batch_size" in saved_flags:
             try:
                 tk["batch_size"].set(int(saved_flags["batch_size"]))
@@ -932,17 +948,40 @@ class LlamaServerGUI:
         tk.Checkbutton(fa_row, text="Fit On (--fit-on)", variable=iv_fit_on).pack(side="left", padx=(16, 0))
 
         # --- Speculative Decoding (row 2, full width) ---
-        spec_row = ttk.Frame(frame)
-        spec_row.grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        spec_frame = ttk.Frame(frame)
+        spec_frame.grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         iv_spec_enabled = self._tk["spec_enabled"]
-        iv_spec_ngram = tk.BooleanVar(value=(self.config.spec_type == "ngram-mod"))
-        iv_spec_draft = tk.BooleanVar(value=(self.config.spec_type == "draft-mtp"))
+        iv_spec_ngram = tk.BooleanVar(value=("ngram-mod" in self.config.spec_type))
+        iv_spec_draft = tk.BooleanVar(value=("draft-mtp" in self.config.spec_type))
+        iv_spec_draft_max = tk.IntVar(value=self.config.spec_draft_n_max)
+        iv_spec_draft_min = tk.IntVar(value=self.config.spec_draft_n_min)
+        self._tk["spec_ngram"] = iv_spec_ngram
+        self._tk["spec_draft"] = iv_spec_draft
+        self._tk["spec_draft_max"] = iv_spec_draft_max
+        self._tk["spec_draft_min"] = iv_spec_draft_min
 
-        # Sub-options row (hidden until spec enabled)
-        spec_sub_row = ttk.Frame(frame)
+        spec_row = ttk.Frame(spec_frame)
+        spec_row.pack(fill="x")
+        tk.Checkbutton(spec_row, text="Speculative Decoding", variable=iv_spec_enabled).pack(side="left")
+
+        # Sub-options row (child of spec_frame — same pack master)
+        spec_sub_row = ttk.Frame(spec_frame)
         tk.Checkbutton(spec_sub_row, text="ngram-mod", variable=iv_spec_ngram).pack(side="left")
         tk.Checkbutton(spec_sub_row, text="draft-mtp", variable=iv_spec_draft).pack(side="left", padx=(16, 0))
+        ttk.Label(spec_sub_row, text="Max:").pack(side="left", padx=(12, 0))
+        ttk.Spinbox(spec_sub_row, from_=0, to=64, textvariable=iv_spec_draft_max, width=4).pack(side="left", padx=(2, 0))
+        ttk.Label(spec_sub_row, text="Min:").pack(side="left", padx=(12, 0))
+        ttk.Spinbox(spec_sub_row, from_=0, to=64, textvariable=iv_spec_draft_min, width=4).pack(side="left", padx=(2, 0))
+
+        def _update_spec_type():
+            """Build spec_type string from both checkboxes."""
+            types = []
+            if iv_spec_ngram.get():
+                types.append("ngram-mod")
+            if iv_spec_draft.get():
+                types.append("draft-mtp")
+            self.config.spec_type = ",".join(types) if types else "ngram-mod"
 
         def _on_spec_toggle(*_):
             try:
@@ -950,34 +989,39 @@ class LlamaServerGUI:
                 self.config.spec_enabled = enabled
                 if enabled:
                     spec_sub_row.pack()
-                    if not iv_spec_ngram.get() and not iv_spec_draft.get():
-                        iv_spec_ngram.set(True)
-                        self.config.spec_type = "ngram-mod"
                 else:
                     spec_sub_row.pack_forget()
                     iv_spec_ngram.set(False)
                     iv_spec_draft.set(False)
-                    self.config.spec_type = "ngram-mod"
+                _update_spec_type()
                 self._update_command()
             except Exception:
                 pass
 
         def _on_spec_sub(*_):
             try:
-                if iv_spec_draft.get():
-                    iv_spec_ngram.set(False)
-                    self.config.spec_type = "draft-mtp"
-                elif iv_spec_ngram.get():
-                    iv_spec_draft.set(False)
-                    self.config.spec_type = "ngram-mod"
+                _update_spec_type()
                 self._update_command()
             except Exception:
                 pass
 
-        tk.Checkbutton(spec_row, text="Speculative Decoding", variable=iv_spec_enabled).pack(side="left")
+        def _on_spec_draft_spin(*_):
+            try:
+                self.config.spec_draft_n_max = max(0, iv_spec_draft_max.get())
+                self.config.spec_draft_n_min = max(0, iv_spec_draft_min.get())
+                self._update_command()
+            except (ValueError, TypeError, tk.TclError):
+                pass
+
         iv_spec_enabled.trace_add("write", lambda *_: _on_spec_toggle())
         iv_spec_ngram.trace_add("write", lambda *_: _on_spec_sub())
         iv_spec_draft.trace_add("write", lambda *_: _on_spec_sub())
+        iv_spec_draft_max.trace_add("write", lambda *_: (_on_spec_draft_spin(),))
+        iv_spec_draft_min.trace_add("write", lambda *_: (_on_spec_draft_spin(),))
+        # Restore sub-checkbox state from saved spec_type
+        spec_type_val = self.config.spec_type or ""
+        iv_spec_ngram.set("ngram-mod" in spec_type_val)
+        iv_spec_draft.set("draft-mtp" in spec_type_val)
         # Show sub-options if spec was already enabled on load
         if self.config.spec_enabled:
             spec_sub_row.pack()
@@ -1036,7 +1080,7 @@ class LlamaServerGUI:
             col = ttk.Frame(ct_row)
             col.pack(side="left", padx=(0, 24))
             ttk.Label(col, text=label).pack(side="left")
-            cache_menu = ttk.OptionMenu(col, var, var.get(), "f16", "f32", "q8_0", "q4_0", "q4_1", "iq4_nl")
+            cache_menu = ttk.OptionMenu(col, var, var.get(), "f16", "q8_0", "q5_0", "q4_0")
             cache_menu.pack(side="left")
 
         # --- Optimise button (row 5, left) ---
