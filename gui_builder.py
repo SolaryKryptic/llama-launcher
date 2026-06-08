@@ -45,6 +45,7 @@ class FlagConfig:
         self.model_path = ""          # set by browse dialog
         self.no_mmap = False            # disable memory mapped loading
         self.mlock = False              # lock model in ram to reduce swapping
+        self.no_warmup = False          # skip warmup run
         self.ctx_size_value = 512       # context size value
         self.n_gpu_layers = -1          # -1 means auto detect by gpu driver, valid 0 to 99
 
@@ -89,6 +90,8 @@ class FlagConfig:
             parts.append(" --no-mmap")
         if self.mlock:
             parts.append(" --mlock")
+        if self.no_warmup:
+            parts.append(" --no-warmup")
 
         # gpu layers only when set to non negative value, -1 means driver default
         if self.n_gpu_layers >= 0:
@@ -165,6 +168,7 @@ class FlagConfig:
             "model_path": self.model_path,
             "no_mmap": self.no_mmap,
             "mlock": self.mlock,
+            "no_warmup": self.no_warmup,
             "ctx_size_value": self.ctx_size_value,
             "n_gpu_layers": self.n_gpu_layers,
             "host": self.host,
@@ -217,6 +221,7 @@ class LlamaServerGUI:
         iv_auto_gpu = tk.IntVar(value=-1)                         # n-gpu-layers (-1=auto, 0-99)
         lv_bool_no_mmap = tk.BooleanVar(value=False)              # no-mmap toggle state variable (boolean)
         ml_bool_mlock = tk.BooleanVar(value=False)                # mlock toggle state variable (boolean)
+        nw_bool_no_warmup = tk.BooleanVar(value=False)            # no-warmup toggle state variable (boolean)
 
         iv_ctx_enabled = tk.BooleanVar(value=False)               # toggle to show ctx-size input
 
@@ -234,7 +239,7 @@ class LlamaServerGUI:
         iv_thread_batch = tk.IntVar(value=0)
 
         # Cache type K and V dropdowns
-        CACHE_TYPES = ["f16", "f32", "q8_0", "q4_0", "q4_1", "iq4_nl"]
+        CACHE_TYPES = ["f16", "f32", "q8_0", "q5_0", "q4_0"]
         sv_cache_k = tk.StringVar(value="f16")
         sv_cache_v = tk.StringVar(value="f16")
 
@@ -255,6 +260,7 @@ class LlamaServerGUI:
             "n_gpu_layers": iv_auto_gpu,
             "no_mmap": lv_bool_no_mmap,
             "mlock": ml_bool_mlock,
+            "no_warmup": nw_bool_no_warmup,
             "ctx_size_enabled": iv_ctx_enabled,
             "flash_attention": iv_flash_attn,
             "fit_on": iv_fit_on,
@@ -282,6 +288,7 @@ class LlamaServerGUI:
             "n_gpu_layers": iv_auto_gpu,
             "no_mmap": lv_bool_no_mmap,
             "mlock": ml_bool_mlock,
+            "no_warmup": nw_bool_no_warmup,
             "ctx_size_enabled": iv_ctx_enabled,
             "flash_attention": iv_flash_attn,
             "fit_on": iv_fit_on,
@@ -328,6 +335,12 @@ class LlamaServerGUI:
         def _on_mlock_change(*_):
             try:
                 self.config.mlock = bool(ml_bool_mlock.get())
+            except Exception:
+                pass
+
+        def _on_no_warmup_change(*_):
+            try:
+                self.config.no_warmup = bool(nw_bool_no_warmup.get())
             except Exception:
                 pass
 
@@ -426,6 +439,7 @@ class LlamaServerGUI:
         # Register all traces on the Tk variables so every change triggers live command update
         lv_bool_no_mmap.trace_add("write", lambda *_: (_on_no_mmap_change(), self._update_command()))
         ml_bool_mlock.trace_add("write", lambda *_: (_on_mlock_change(), self._update_command()))
+        nw_bool_no_warmup.trace_add("write", lambda *_: (_on_no_warmup_change(), self._update_command()))
         iv_auto_gpu.trace_add("write", lambda *_: (_on_gpu_layers_change(), self._update_command()))
 
         # Context size toggle and input
@@ -799,9 +813,11 @@ class LlamaServerGUI:
 
         lv_bool_no_mmap = self._tk["no_mmap"]
         ml_bool_mlock = self._tk["mlock"]
+        nw_bool_no_warmup = self._tk["no_warmup"]
 
         tk.Checkbutton(check_row, text="No-MMAP", variable=lv_bool_no_mmap).pack(side="left")
         tk.Checkbutton(check_row, text="MLock", variable=ml_bool_mlock).pack(side="left", padx=(12, 0))
+        tk.Checkbutton(check_row, text="No Warmup", variable=nw_bool_no_warmup).pack(side="left", padx=(12, 0))
 
 
     def _section_context_gpu(self, parent):
