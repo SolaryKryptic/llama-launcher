@@ -11,7 +11,7 @@ Point-and-click interface to configure and generate `llama-server` command-line 
 ### Model Loading
 
 - **GGUF Browse**: Open file dialog to select `.gguf` models
-- **No-MMAP / MLock**: Mutually exclusive memory loading options (only one active at a time)
+- **HuggingFace**: Link to huggingface.co/models pre-filtered by .gguf
 
 ### Performance Tuning
 
@@ -47,8 +47,7 @@ Point-and-click interface to configure and generate `llama-server` command-line 
 
 ### Other
 
-- **Config Persistence**: All settings saved/restored automatically between sessions (`~/.llama_server_gui.json`)
-- **Cross-platform**: Works on Windows, Linux (xdotool), and macOS
+- **Config Persistence**: All settings saved/restored automatically between sessions (`~/llama_gui_data.json`)
 
 ## Requirements
 
@@ -59,16 +58,5 @@ Point-and-click interface to configure and generate `llama-server` command-line 
 
 Download and run .exe file, app window will open shortly
 
-The application window opens centered on your screen. Configure settings then copy the generated command from the bottom panel, run it in a seperate CMD window straight from the app, or save it as a .bat for one-click loading.
+Configure settings then copy the generated command from the bottom panel, run it in a seperate CMD window straight from the app, or save it as a .bat for later one-click loading.
 
-### Example Output
-
-```
-llama-server.exe -m "C:\models\mistral.gguf" -ngl auto --no-mmap -b 2048 -ub 512 -ctk f16 -ctv f16 --ctx-size 4096 --host 0.0.0.0 --port 8080 --temp 0.80 --min-p 0.00 --top-k 40 --presence-penalty 0.00 --top-p 0.950 --repeat-penalty 1.10
-```
-
-## Screenshots
-
-![App Interface](screenshots/interface.png)
-
-*(Add screenshot when available)*
