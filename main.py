@@ -12,7 +12,7 @@ def _no_scroll(event):
     return "break"
 root.bind("<MouseWheel>", _no_scroll)
 
-root.title("llama-server command generator")
+root.title("llama-launcher")
 # Restore saved window geometry or default to centered
 try:
     import json as _json, os as _os

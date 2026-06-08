@@ -185,6 +185,8 @@ class FlagConfig:
             "fit_on": self.fit_on,
             "spec_enabled": self.spec_enabled,
             "spec_type": self.spec_type,
+            "spec_draft_n_max": self.spec_draft_n_max,
+            "spec_draft_n_min": self.spec_draft_n_min,
             "batch_size": self.batch_size,
             "micro_batch_size": self.micro_batch_size,
             "threads": self.threads,
@@ -263,6 +265,8 @@ class LlamaServerGUI:
         sv_topk = tk.IntVar(value=40)                              # top-k integer value >= 1
         sv_topp = tk.DoubleVar(value=0.95)                        # top-p float between [0.05, 1.0]
         sv_rp = tk.DoubleVar(value=1.1)                           # repeat penalty (float > 1.0)
+        sv_minp = tk.DoubleVar(value=0.0)                         # min-p (float -1.0–1.0)
+        sv_pp = tk.DoubleVar(value=0.0)                           # presence penalty (float -2.0–2.0)
 
         self._vars = {
             "model_path": sv_model_path,
@@ -291,6 +295,8 @@ class LlamaServerGUI:
             "top_k": sv_topk,
             "top_p": sv_topp,
             "repeat_penalty": sv_rp,
+            "min_p": sv_minp,
+            "presence_penalty": sv_pp,
         }
 
         # Store all Tk variables on self for cross-method access
@@ -321,6 +327,8 @@ class LlamaServerGUI:
             "top_k": sv_topk,
             "top_p": sv_topp,
             "repeat_penalty": sv_rp,
+            "min_p": sv_minp,
+            "presence_penalty": sv_pp,
         }
 
         # Load saved config
@@ -615,14 +623,19 @@ class LlamaServerGUI:
                 tk["batch_size"].set(int(saved_flags["batch_size"]))
             except (ValueError, TypeError):
                 pass
-        if "micro_batch" in saved_flags:
+        if "micro_batch_size" in saved_flags:
             try:
-                tk["micro_batch"].set(int(saved_flags["micro_batch"]))
+                tk["micro_batch"].set(int(saved_flags["micro_batch_size"]))
             except (ValueError, TypeError):
                 pass
-        if "threads_val" in saved_flags:
+        if "threads" in saved_flags:
             try:
-                tk["threads_val"].set(int(saved_flags["threads_val"]))
+                tk["threads_val"].set(int(saved_flags["threads"]))
+            except (ValueError, TypeError):
+                pass
+        if "thread_batch" in saved_flags:
+            try:
+                tk["thread_batch"].set(int(saved_flags["thread_batch"]))
             except (ValueError, TypeError):
                 pass
         if "cache_type_k" in saved_flags:
@@ -673,6 +686,16 @@ class LlamaServerGUI:
         if "top_p" in saved_flags:
             try:
                 tk["top_p"].set(float(saved_flags["top_p"]))
+            except (ValueError, TypeError):
+                pass
+        if "min_p" in saved_flags:
+            try:
+                tk["min_p"].set(float(saved_flags["min_p"]))
+            except (ValueError, TypeError):
+                pass
+        if "presence_penalty" in saved_flags:
+            try:
+                tk["presence_penalty"].set(float(saved_flags["presence_penalty"]))
             except (ValueError, TypeError):
                 pass
         if "repeat_penalty" in saved_flags:
@@ -919,7 +942,7 @@ class LlamaServerGUI:
         label.pack(side="left")
 
         # Spinbox for GPU layers from -1 to 99
-        spinvar = tk.IntVar(value=-1)
+        spinvar = tk.IntVar(value=self.config.n_gpu_layers)
 
         def _on_spinval(*_):
             try:
@@ -1261,8 +1284,14 @@ class LlamaServerGUI:
         samp_frame = ttk.Frame(parent)
         samp_frame.pack(fill="both", padx=6, pady=4)
 
+        sv_temp = self._tk["temperature"]
+        sv_minp = self._tk["min_p"]
+        sv_topk = self._tk["top_k"]
+        sv_pp = self._tk["presence_penalty"]
+        sv_topp = self._tk["top_p"]
+        sv_rp = self._tk["repeat_penalty"]
+
         # --- Temperature (row 0, col 0) ---
-        sv_temp = tk.DoubleVar(value=0.8)
         def _temp_safe(*_):
             try:
                 raw = sv_temp.get()
@@ -1281,7 +1310,6 @@ class LlamaServerGUI:
                     textvariable=sv_temp).grid(row=0, column=0, sticky="w", padx=(100, 0), pady=1)
 
         # --- Min-P (row 0, col 1) ---
-        sv_minp = tk.DoubleVar(value=0.0)
         def _minp_safe(*_):
             try:
                 raw = sv_minp.get()
@@ -1300,7 +1328,6 @@ class LlamaServerGUI:
                     textvariable=sv_minp).grid(row=0, column=1, sticky="w", padx=(140, 0), pady=1)
 
         # --- Top-K (row 1, col 0) ---
-        sv_topk = tk.IntVar(value=40)
         def _topk_safe(*_):
             try:
                 raw = sv_topk.get()
@@ -1320,7 +1347,6 @@ class LlamaServerGUI:
                     textvariable=sv_topk).grid(row=1, column=0, sticky="w", padx=(100, 0), pady=1)
 
         # --- Presence Penalty (row 1, col 1) ---
-        sv_pp = tk.DoubleVar(value=0.0)
         def _pp_safe(*_):
             try:
                 raw = sv_pp.get()
@@ -1339,7 +1365,6 @@ class LlamaServerGUI:
                     textvariable=sv_pp).grid(row=1, column=1, sticky="w", padx=(160, 0), pady=1)
 
         # --- Top-P (row 2, col 0) ---
-        sv_topp = tk.DoubleVar(value=0.95)
         def _topp_safe(*_):
             try:
                 raw = sv_topp.get()
