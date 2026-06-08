@@ -70,6 +70,8 @@ class FlagConfig:
 
         self.cache_type_k = "f16"      # kv cache type k
         self.cache_type_v = "f16"      # kv cache type v
+        self.cache_type_kd = "f16"     # draft-mtp cache type k
+        self.cache_type_vd = "f16"     # draft-mtp cache type v
 
         self.temperature = 0.8          # sampling temperature
         self.min_p = 0.0                # minimum p sampling value
@@ -124,6 +126,9 @@ class FlagConfig:
         # cache types always included
         parts.append(f" -ctk {self.cache_type_k}")
         parts.append(f" -ctv {self.cache_type_v}")
+        if "draft-mtp" in (self.spec_type or ""):
+            parts.append(f" -ctkd {self.cache_type_kd}")
+            parts.append(f" -ctvd {self.cache_type_vd}")
 
         # add context size value
         ctx_val = max(2, min(int(str(self.ctx_size_value)), 999999999))
@@ -186,6 +191,8 @@ class FlagConfig:
             "thread_batch": self.thread_batch,
             "cache_type_k": self.cache_type_k,
             "cache_type_v": self.cache_type_v,
+            "cache_type_kd": self.cache_type_kd,
+            "cache_type_vd": self.cache_type_vd,
             "temperature": self.temperature,
             "min_p": self.min_p,
             "top_k": self.top_k,
@@ -242,6 +249,8 @@ class LlamaServerGUI:
         CACHE_TYPES = ["f16", "f32", "q8_0", "q5_0", "q4_0"]
         sv_cache_k = tk.StringVar(value="f16")
         sv_cache_v = tk.StringVar(value="f16")
+        sv_cache_kd = tk.StringVar(value="f16")
+        sv_cache_vd = tk.StringVar(value="f16")
 
         sv_host = tk.StringVar(value="0.0.0.0")                   # server host binding address
         iv_port = tk.IntVar(value=8080)                           # HTTP port (1-65535)
@@ -271,6 +280,8 @@ class LlamaServerGUI:
             "thread_batch": iv_thread_batch,
             "cache_type_k": sv_cache_k,
             "cache_type_v": sv_cache_v,
+            "cache_type_kd": sv_cache_kd,
+            "cache_type_vd": sv_cache_vd,
             "host": sv_host,
             "port": iv_port,
             "cache_ram": iv_cache_ram,
@@ -299,6 +310,8 @@ class LlamaServerGUI:
             "thread_batch": iv_thread_batch,
             "cache_type_k": sv_cache_k,
             "cache_type_v": sv_cache_v,
+            "cache_type_kd": sv_cache_kd,
+            "cache_type_vd": sv_cache_vd,
             "host": sv_host,
             "port": iv_port,
             "cache_ram": iv_cache_ram,
@@ -408,6 +421,22 @@ class LlamaServerGUI:
             except Exception:
                 pass
 
+        def _on_cache_kd_change(*_):
+            try:
+                val = sv_cache_kd.get()
+                if val in CACHE_TYPES:
+                    self.config.cache_type_kd = val
+            except Exception:
+                pass
+
+        def _on_cache_vd_change(*_):
+            try:
+                val = sv_cache_vd.get()
+                if val in CACHE_TYPES:
+                    self.config.cache_type_vd = val
+            except Exception:
+                pass
+
         def _on_host_change(*_):
             self.config.host = sv_host.get() or "0.0.0.0"
 
@@ -496,6 +525,8 @@ class LlamaServerGUI:
         # Cache type K / V traces
         sv_cache_k.trace_add("write", lambda *_: (_on_cache_k_change(), self._update_command()))
         sv_cache_v.trace_add("write", lambda *_: (_on_cache_v_change(), self._update_command()))
+        sv_cache_kd.trace_add("write", lambda *_: (_on_cache_kd_change(), self._update_command()))
+        sv_cache_vd.trace_add("write", lambda *_: (_on_cache_vd_change(), self._update_command()))
 
         # Build the full UI
         self._build_ui()
@@ -587,6 +618,16 @@ class LlamaServerGUI:
         if "cache_type_v" in saved_flags:
             try:
                 tk["cache_type_v"].set(str(saved_flags["cache_type_v"]))
+            except (ValueError, TypeError):
+                pass
+        if "cache_type_kd" in saved_flags:
+            try:
+                tk["cache_type_kd"].set(str(saved_flags["cache_type_kd"]))
+            except (ValueError, TypeError):
+                pass
+        if "cache_type_vd" in saved_flags:
+            try:
+                tk["cache_type_vd"].set(str(saved_flags["cache_type_vd"]))
             except (ValueError, TypeError):
                 pass
         if "host" in saved_flags:
@@ -1090,9 +1131,35 @@ class LlamaServerGUI:
             cache_menu = ttk.OptionMenu(col, var, var.get(), "f16", "q8_0", "q5_0", "q4_0")
             cache_menu.pack(side="left")
 
-        # --- Optimise button (row 5, left) ---
+        # --- Draft-MTP Cache Type Kd and Vd dropdowns (row 5, hidden by default) ---
+        ct_draft_row = ttk.Frame(frame)
+        sv_cache_kd = self._tk["cache_type_kd"]
+        sv_cache_vd = self._tk["cache_type_vd"]
+
+        for var, label in [(sv_cache_kd, "Cache Kd"), (sv_cache_vd, "Cache Vd")]:
+            col = ttk.Frame(ct_draft_row)
+            col.pack(side="left", padx=(0, 24))
+            ttk.Label(col, text=label).pack(side="left")
+            cache_menu_d = ttk.OptionMenu(col, var, var.get(), "f16", "q8_0", "q5_0", "q4_0")
+            cache_menu_d.pack(side="left")
+
+        def _on_draft_cache_toggle(*_):
+            try:
+                if iv_spec_draft.get():
+                    ct_draft_row.grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
+                else:
+                    ct_draft_row.grid_remove()
+            except Exception:
+                pass
+
+        iv_spec_draft.trace_add("write", lambda *_: _on_draft_cache_toggle())
+        # Show draft cache row if draft-mtp is already enabled
+        if iv_spec_draft.get():
+            ct_draft_row.grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+        # --- Optimise button (row 6, left) ---
         opt_btn_frame = ttk.Frame(frame)
-        opt_btn_frame.grid(row=5, column=0, sticky="w", pady=(8, 0))
+        opt_btn_frame.grid(row=6, column=0, sticky="w", pady=(8, 0))
         ttk.Button(opt_btn_frame, text="Optimise (WIP)", command=self._run_optimiser).pack(side="left")
 
     def _section_server_settings(self, parent):
