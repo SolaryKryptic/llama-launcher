@@ -1,9 +1,3 @@
-"""Core GUI builder for llama-server CLI command generation.
-
-Pure stdlib tkinter — no third-party dependencies required.
-Uses ttk widgets with the 'clam' theme (available on Windows 10/11).
-"""
-
 import os
 import json
 import subprocess
@@ -15,9 +9,8 @@ from hardwarescanner import scan_hardware
 import sys as _sys2
 
 _CONFIG_PATH = os.path.join(os.getcwd(), "llama_gui_data.json")
-
+"""load config from disk"""
 def _load_config():
-    """Load the full config (last_folder + all flag values) from disk."""
     try:
         with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -25,7 +18,7 @@ def _load_config():
         return {}
 
 def _save_config(data):
-    """Persist the full config to disk."""
+    """save config to disk"""
     try:
         with open(_CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
@@ -33,93 +26,91 @@ def _save_config(data):
         pass
 
 def _load_last_folder():
-    """Return the previously saved destination folder, or empty string."""
+    """load last used folder path from config for file dialogs"""
     return _load_config().get("last_folder", "")
 
 def _save_last_folder(folder):
-    """Persist the given folder path for future sessions."""
+    """save last used folder path to config for file dialogs"""
     data = _load_config()
     data["last_folder"] = folder
     _save_config(data)
 
 
-# ---------------------------------------------------------------------------
-# Data model & command generation
-# ---------------------------------------------------------------------------
+# data model and command generation
 
 class FlagConfig:
-    """Holds all mutable flag state and builds the generated CLI string."""
+    """holds mutable flag state, builds generated cli string"""
 
     def __init__(self):
-        self.model_path = ""          # set via browse dialog
-        self.no_mmap = False          # disables memory-mapped file loading
-        self.mlock = False            # mutually exclusive with no-mmap
+        self.model_path = ""          # set by browse dialog
+        self.no_mmap = False            # disable memory mapped loading
+        self.mlock = False              # lock model in ram to reduce swapping
         self.ctx_size_value = 512       # context size value
-        self.n_gpu_layers = -1         # -1 means auto-detect by GPU driver; range 0-99
+        self.n_gpu_layers = -1          # -1 means auto detect by gpu driver, valid 0 to 99
 
-        self.host = "0.0.0.0"          # bind all interfaces (local LAN access)
-        self.port = 8080               # HTTP server port
-        self.num_threads = os.cpu_count() or 4   # dynamic default from machine CPU count
-        self.threads_enabled = False    # toggle to include -t/--threads in command
+        self.host = "0.0.0.0"         # bind all interfaces, allow local lan access
+        self.port = 8080                # http server port
+        self.cache_ram = 8000           # cache ram in gb
+        self.num_threads = os.cpu_count() or 4   # default from cpu count
+        self.threads_enabled = False    # include threads flag when enabled
 
-        self.flash_attention = False    # enable Flash Attention (-fa)
-        self.fit_on = False              # enable --fit-on (GPU VRAM fit)
+        self.flash_attention = False    # enable flash attention
+        self.fit_on = False             # enable fit on to fit model to gpu vram
 
-        self.batch_size = 2048           # batch size for KV cache (-b), range 1–8192
-        self.micro_batch_size = 512      # micro batch size for memory splitting (-ub), range 1–8192
-        self.threads = -1                # thread count (-t), -1 means auto-detect
-        self.thread_batch = 0              # thread-batch (-tb), 0 means unset
+        self.batch_size = 2048          # batch size for kv cache, typical 1 to 8192
+        self.micro_batch_size = 512     # micro batch for memory split, 1 to 8192
+        self.threads = -1               # thread count, -1 means auto detect
+        self.thread_batch = 0           # thread batch value, 0 means unset
 
-        self.spec_enabled = False           # toggle to enable speculative decoding
-        self.spec_type = "ngram-mod"         # spec strategy: ngram-mod or draft-mtp
-        self.spec_draft_n_max = 0            # --spec-draft-n-max (0 = unset)
-        self.spec_draft_n_min = 0            # --spec-draft-n-min (0 = unset)
+        self.spec_enabled = False       # enable speculative decoding
+        self.spec_type = "ngram-mod"  # spec strategy, e g ngram mod or draft mtp
+        self.spec_draft_n_max = 0       # spec draft max, 0 means unset
+        self.spec_draft_n_min = 0       # spec draft min, 0 means unset
 
-        self.cache_type_k = "f16"       # KV cache type K, options: f16, f32, q8_0, q4_0, q4_1, iq4_nl
-        self.cache_type_v = "f16"       # KV cache type V, same options
+        self.cache_type_k = "f16"      # kv cache type k
+        self.cache_type_v = "f16"      # kv cache type v
 
         self.temperature = 0.8          # sampling temperature
-        self.min_p = 0.0                # minimum-p sampling value (0.0–1.0)
-        self.top_k = 40                 # top-k sampling value
-        self.presence_penalty = 0.0     # presence penalty factor (-2.0–2.0)
-        self.top_p = 0.95               # nucleus sampling probability threshold
-        self.repeat_penalty = 1.1       # repeat penalty factor
+        self.min_p = 0.0                # minimum p sampling value
+        self.top_k = 40                 # top k sampling value
+        self.presence_penalty = 0.0     # presence penalty, negative to penalise
+        self.top_p = 0.95               # top p nucleus sampling
+        self.repeat_penalty = 1.1       # repeat penalty, >1 to reduce repeats
 
     def generate_command(self):
-        """Build the full llama-server CLI command string from current state."""
         parts = ["llama-server.exe -lv 4"]
 
         model_path = self.model_path.strip()
         if model_path:
             parts.append(f' -m "{model_path}"')
 
-        # No-MMAP and MLock — both can be active
+        # no mmap and mlock both can be active
         if self.no_mmap:
             parts.append(" --no-mmap")
         if self.mlock:
             parts.append(" --mlock")
 
-        # GPU layers (only when set to non-negative value; -1 means driver-default)
+        # gpu layers only when set to non negative value, -1 means driver default
         if self.n_gpu_layers >= 0:
             parts.append(f" -ngl {self.n_gpu_layers}")
 
-        # Flash Attention & Fit On (only when checked)
+        # flash attention and fit on, only when checked
         if self.flash_attention:
             parts.append(" -fa on")
         if self.fit_on:
             parts.append(" --fit on")
 
-        # Batch size, micro batch size, and threads are included when set, with -t skipped for -1
+        # batch size, micro batch and threads included when set, -t skipped for -1
         parts.append(f" -b {self.batch_size}")
         parts.append(f" -ub {self.micro_batch_size}")
         if self.threads != -1:
             parts.append(f" -t {self.threads}")
 
-        # Thread batch (only when set to non-zero)
+        # thread batch only when non zero
         if self.thread_batch > 0:
             parts.append(f" -tb {self.thread_batch}")
 
-        # Speculative decoding (only when enabled)
+        # speculative decoding only when enabled
         if self.spec_enabled:
             parts.append(f" --spec-type {self.spec_type}")
             if self.spec_draft_n_max > 0:
@@ -127,21 +118,22 @@ class FlagConfig:
             if self.spec_draft_n_min > 0:
                 parts.append(f" --spec-draft-n-min {self.spec_draft_n_min}")
 
-        # Cache types are always included
+        # cache types always included
         parts.append(f" -ctk {self.cache_type_k}")
         parts.append(f" -ctv {self.cache_type_v}")
 
-        # Add context size only when the toggle is enabled
+        # add context size value
         ctx_val = max(2, min(int(str(self.ctx_size_value)), 999999999))
         parts.append(f" -c {ctx_val}")
 
-        # Server settings always included
+        # server settings always included
         host = str(self.host).strip() or "0.0.0.0"
         port = max(1, min(int(str(self.port)), 65535))
         parts.append(f" --host {host}")
         parts.append(f" --port {port}")
+        parts.append(f" --cache-ram {self.cache_ram}"),
 
-        # Sampling params (always included)
+        # sampling params always included
         temp = max(0.05, min(float(str(self.temperature)), 2.0))
         minp = min(max(float(str(self.min_p)), -1.0), 1.0)
         topk = max(1, int(str(self.top_k)))
@@ -153,14 +145,14 @@ class FlagConfig:
         parts.append(f" --min-p {minp:.2f}")
         parts.append(f" --top-k {topk}")
         parts.append(f" --presence-penalty {pp:.2f}")
-        parts.append(f" --top-p {topp:.3f}")
+        parts.append(f" --top-p {topp:.2f}")
         parts.append(f" --repeat-penalty {rp:.2f}")
 
         return "".join(parts)
 
     @staticmethod
     def _safe_int(name, default):
-        """Safely convert a value to int; fall back on *default*."""
+        """safely convert value to int, return default on failure"""
         try:
             val = str(default) if isinstance(default, str) else default
             return int(val)
@@ -168,7 +160,7 @@ class FlagConfig:
             return default
 
     def to_dict(self):
-        """Return a dict of all mutable flag state for persistence."""
+        """return dict of mutable flag state for persistence"""
         return {
             "model_path": self.model_path,
             "no_mmap": self.no_mmap,
@@ -177,6 +169,7 @@ class FlagConfig:
             "n_gpu_layers": self.n_gpu_layers,
             "host": self.host,
             "port": self.port,
+            "cache_ram": self.cache_ram,
             "num_threads": self.num_threads,
             "threads_enabled": self.threads_enabled,
             "flash_attention": self.flash_attention,
@@ -198,7 +191,7 @@ class FlagConfig:
         }
 
     def from_dict(self, d):
-        """Restore mutable flag state from a saved dict."""
+        """restore mutable flag state from saved dict"""
         for key, val in d.items():
             if hasattr(self, key):
                 setattr(self, key, val)
@@ -209,7 +202,7 @@ class FlagConfig:
 # Live command generation is triggered by Tk variable traces on every input field
 
 class LlamaServerGUI:
-    """Main tkinter GUI for configuring llama-server flags and generating commands."""
+    """main tkinter gui for configuring llama server flags, generating commands"""
 
     def __init__(self, root):
         self.root = root
@@ -247,6 +240,7 @@ class LlamaServerGUI:
 
         sv_host = tk.StringVar(value="0.0.0.0")                   # server host binding address
         iv_port = tk.IntVar(value=8080)                           # HTTP port (1-65535)
+        iv_cache_ram = tk.IntVar(value=8000)                      # cache RAM in GB (--cache-ram)
 
         iv_threads_enabled = tk.BooleanVar(value=False)           # toggle to show threads input
         iv_threads_val = tk.IntVar(value=os.cpu_count() or 4)     # thread count default from CPU cores
@@ -273,6 +267,7 @@ class LlamaServerGUI:
             "cache_type_v": sv_cache_v,
             "host": sv_host,
             "port": iv_port,
+            "cache_ram": iv_cache_ram,
             "threads_enabled": iv_threads_enabled,
             "num_threads": iv_threads_val,
             "temperature": sv_temp,
@@ -299,6 +294,7 @@ class LlamaServerGUI:
             "cache_type_v": sv_cache_v,
             "host": sv_host,
             "port": iv_port,
+            "cache_ram": iv_cache_ram,
             "threads_enabled": iv_threads_enabled,
             "num_threads": iv_threads_val,
             "temperature": sv_temp,
@@ -498,7 +494,7 @@ class LlamaServerGUI:
 # ---------------------------------------------------------------------------
 
     def _on_close(self):
-        """Save config (flags + folder + window geometry) before closing."""
+        """save config flags, folder, window geometry before closing"""
         try:
             data = _load_config()
             data["flags"] = self.config.to_dict()
@@ -514,7 +510,7 @@ class LlamaServerGUI:
         self.root.destroy()
 
     def _restore_vars(self, saved_flags):
-        """Set Tk variable values to match saved flag state."""
+        """set tk variable values to match saved flag state"""
         tk = self._tk
         if "model_path" in saved_flags:
             tk["model_path"].set(str(saved_flags["model_path"]))
@@ -589,6 +585,11 @@ class LlamaServerGUI:
                 tk["port"].set(int(saved_flags["port"]))
             except (ValueError, TypeError):
                 pass
+        if "cache_ram" in saved_flags:
+            try:
+                tk["cache_ram"].set(int(saved_flags["cache_ram"]))
+            except (ValueError, TypeError):
+                pass
         if "temperature" in saved_flags:
             try:
                 tk["temperature"].set(float(saved_flags["temperature"]))
@@ -611,7 +612,7 @@ class LlamaServerGUI:
                 pass
 
     def _build_ui(self):
-        """Construct all sections and pack them into a scrollable canvas."""
+        """construct all sections and pack into a scrollable canvas"""
         root = self.root
 
         # Use grid so the window layout expands naturally
@@ -648,13 +649,13 @@ class LlamaServerGUI:
         scroll_content_id = self.canvas.create_window((0, 5), window=self.scrollable, anchor="nw")
 
         def _on_scroll_configure(event):
-            """Update the scroll region whenever section frames change size."""
+            """update scroll region when section frames change size"""
             bbox = self.canvas.bbox("all")
             if bbox:
                 self.canvas.configure(scrollregion=(*bbox[:4],))
 
         def _update_content_width(event):
-            """Resize the scrollable frame to match parent canvas width."""
+            """resize scrollable frame to match parent canvas width"""
             w = event.width or root.winfo_reqwidth()
             self.canvas.itemconfigure(scroll_content_id, width=w)
             bbox = self.canvas.bbox("all")
@@ -662,7 +663,7 @@ class LlamaServerGUI:
                 self.canvas.configure(scrollregion=(*bbox[:4],))
 
         def _on_scroll(event):
-            """Handle scroll + resize."""
+            """handle scroll and resize"""
             return (_update_content_width(event), _on_scroll_configure(event))
 
         self.scrollable.bind("<Configure>", lambda e: _on_scroll(e))
@@ -757,7 +758,7 @@ class LlamaServerGUI:
 
 
     def _section_model_loading(self, parent):
-        """Model loading section: browse button + No-MMAP / MLock toggles."""
+        """model loading section, browse button, no mmap, mlock toggles"""
         frame = ttk.LabelFrame(parent, text="Model Loading", padding=(8, 6))
         frame.pack(fill="both", padx=6, pady=4)
 
@@ -804,7 +805,7 @@ class LlamaServerGUI:
 
 
     def _section_context_gpu(self, parent):
-        """Context size & GPU layers section (side-by-side columns)."""
+        """context size and gpu layers section, side by side columns"""
         frame = ttk.LabelFrame(parent, text="Performance", padding=(8, 6))
         frame.pack(fill="both", padx=6, pady=4)
 
@@ -965,7 +966,7 @@ class LlamaServerGUI:
         ttk.Spinbox(spec_sub_row, from_=0, to=64, textvariable=iv_spec_draft_min, width=4).pack(side="left", padx=(2, 0))
 
         def _update_spec_type():
-            """Build spec_type string from both checkboxes."""
+            """build spec_type string from both checkboxes"""
             types = []
             if iv_spec_ngram.get():
                 types.append("ngram-mod")
@@ -1079,7 +1080,7 @@ class LlamaServerGUI:
         ttk.Button(opt_btn_frame, text="Optimise (WIP)", command=self._run_optimiser).pack(side="left")
 
     def _section_server_settings(self, parent):
-        """Server settings section (always visible — sensible defaults)."""
+        """server settings section, always visible, sensible defaults"""
         frame = ttk.LabelFrame(parent, text="Network & Server", padding=(8, 6))
         frame.pack(fill="both", padx=6, pady=4)
 
@@ -1132,9 +1133,33 @@ class LlamaServerGUI:
         entry_p = ttk.Spinbox(port_frame, from_=1, to=65535, textvariable=iv_port, width=8)
         entry_p.pack(side="left")
 
+        # Cache RAM spinbox
+        iv_cache_ram = self._tk["cache_ram"]
+        cache_frame = ttk.Frame(net_row)
+        cache_frame.pack(side="left", padx=(24, 0))
+        ttk.Label(cache_frame, text="Cache RAM:").pack(side="left", padx=(0, 4))
+
+        def _cache_ram_safe(*_):
+            try:
+                raw = iv_cache_ram.get()
+                val = int(raw) if raw else 8000
+                if not (0 <= val <= 999999): return
+                iv_cache_ram.set(max(0, min(val, 999999)))
+                self.config.cache_ram = max(0, min(val, 999999))
+            except (ValueError, TypeError, tk.TclError):
+                pass
+        def _cache_ram_cmd(*_):
+            try: self._update_command()
+            except Exception:
+                pass
+        iv_cache_ram.trace_add("write", lambda *_: (_cache_ram_safe(), _cache_ram_cmd()))
+
+        entry_c = ttk.Spinbox(cache_frame, from_=0, to=999999, textvariable=iv_cache_ram, width=8)
+        entry_c.pack(side="left")
+
 
     def _section_sampling_params(self, parent):
-        """Sampling parameters section (always visible, 2-column grid)."""
+        """sampling parameters section, always visible, two column grid"""
         samp_frame = ttk.Frame(parent)
         samp_frame.pack(fill="both", padx=6, pady=4)
 
@@ -1261,7 +1286,7 @@ class LlamaServerGUI:
 # ---------------------------------------------------------------------------
 
     def _section_hardware_info(self, parent):
-        """Read-only hardware info display (CPU / GPU / VRAM / RAM)."""
+        """read only hardware info display, cpu, gpu, vram, ram"""
         frame = ttk.LabelFrame(parent, text="System Hardware", padding=(8, 6))
         frame.pack(fill="both", padx=6, pady=4)
 
@@ -1282,7 +1307,7 @@ class LlamaServerGUI:
         info_label.pack(fill="x")
 
     def _browse_model(self):
-        """Open file dialog to select a .gguf model file."""
+        """open file dialog to select gguf model file"""
         path = filedialog.askopenfilename(
             title="Select GGUF Model File",
             filetypes=[("GGUF files", "*.gguf"), ("All files", "*.*")],
@@ -1294,13 +1319,11 @@ class LlamaServerGUI:
             self._update_command()
 
     def _open_huggingface(self):
-        """Open the Hugging Face models page in the default browser."""
+        """open hugging face models page in default browser"""
         webbrowser.open("https://huggingface.co/models?library=gguf&sort=trending")
 
     def _validate_prerequisites(self):
-        """Step 3: Check that a model is selected and llama-bench.exe exists.
-        Returns {ok, model_path, bench_exe} or raises on error.
-        """
+        """check model selected, check bench exe, return dict with ok, model_path, bench_exe"""
         if not self.config.model_path:
             return {"ok": False, "message": "Please select a model before optimising."}
 
@@ -1309,11 +1332,7 @@ class LlamaServerGUI:
         return {"ok": True, "model_path": self.config.model_path, "bench_exe": bench_exe}
 
     def _build_optimiser_params(self):
-        """Build sweep parameters for the new optimiser.
-
-        Returns a dict with thread list, batch sizes, FITT targets,
-        and cache K types to test sequentially.
-        """
+        """build sweep parameters for optimiser, return dict of lists and limits"""
         import itertools as _it
 
         logical_cores = os.cpu_count() or 4
@@ -1339,11 +1358,7 @@ class LlamaServerGUI:
 
     def _build_bench_cmd(self, bench_exe, model_path, threads=None, batch=None, micro_batch=None,
                          fitt=None, ctx_size=16384, ctk="f16", ctv="f16", is_base=False):
-        """Build llama-bench command.
-
-        *is_base* runs a naked baseline (no -t/-b/-ub/-fa/-fitt/-ctk/-ctv).
-        Otherwise all parameters are included explicitly.
-        """
+        """build llama bench command, is_base runs baseline without extra flags, otherwise include parameters"""
         cmd = [bench_exe, "-m", model_path, "-o", "md", "--no-warmup",
                "-fitc", str(ctx_size), "-r", "3"]
         if not is_base:
@@ -1353,7 +1368,7 @@ class LlamaServerGUI:
 
     @staticmethod
     def _parse_bench_results(output):
-        """Parse prompt (pp512) and text-gen (tg128) TPS from llama-bench output."""
+        """parse prompt pp512, text gen tg128 tps from llama bench output"""
         import re as _re
         results = {}
         for line in output.splitlines():
@@ -1371,16 +1386,12 @@ class LlamaServerGUI:
 
     @staticmethod
     def _calculate_score(pp, tg, metric_weight=0.5):
-        """Dual-metric weighted score."""
+        """dual metric weighted score"""
         return (pp * metric_weight) + (tg * (1.0 - metric_weight))
 
     def _run_optimisation(self, bench_exe, model_path, progress_var,
                           label_var, score_var, remaining_var, cancel_flag):
-        """Run the two-stage sequential greedy optimiser + neighbourhood verification.
-
-        Updates Tk variables on the main thread via root.after().
-        Returns final config dict when done (via *final_config_holder*).
-        """
+        """run two stage optimiser, update tk variables via root after, return final config via holder"""
         import subprocess as _sub
         import itertools as _it
         import time as _time
@@ -1549,7 +1560,7 @@ class LlamaServerGUI:
         return final_config
 
     def _show_progress_window(self, model_path, bench_exe):
-        """Show optimisation progress window. Returns final config or None."""
+        """show optimisation progress window, return final config or none"""
         import threading as _threading
 
         win = Toplevel(self.root)
@@ -1611,7 +1622,7 @@ class LlamaServerGUI:
             return []
 
     def _show_results_window(self, final_config):
-        """Show optimisation results: best config and recommended flags."""
+        """show optimisation results, best config and recommended flags"""
         win = Toplevel(self.root)
         win.title("Optimisation Results")
         win.geometry("580x420")
@@ -1673,7 +1684,7 @@ class LlamaServerGUI:
 
 
     def _update_command(self):
-        """Rebuild the generated command and update the display."""
+        """rebuild generated command, update display"""
         cmd = self.config.generate_command()
         if hasattr(self, 'cmd_text'):
             self.cmd_text.configure(state='normal')
@@ -1682,7 +1693,7 @@ class LlamaServerGUI:
             self.cmd_text.configure(state='disabled')
 
     def _run_optimiser(self):
-        """Entry point for the new optimiser (sequential greedy + neighbourhood)."""
+        """entry point for optimiser, sequential greedy and neighbourhood"""
         from tkinter import messagebox
 
         # Warning dialog
