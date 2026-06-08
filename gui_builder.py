@@ -93,10 +93,10 @@ class FlagConfig:
         if model_path:
             parts.append(f' -m "{model_path}"')
 
-        # Mutually exclusive No-MMAP / MLock — only one can be active at a time
-        if self.no_mmap and not self.mlock:
+        # No-MMAP and MLock — both can be active
+        if self.no_mmap:
             parts.append(" --no-mmap")
-        elif self.mlock and not self.no_mmap:
+        if self.mlock:
             parts.append(" --mlock")
 
         # GPU layers (only when set to non-negative value; -1 means driver-default)
@@ -313,12 +313,8 @@ class LlamaServerGUI:
         if saved_flags:
             import sys as _sys2
             global _sys2
-            print(f"DEBUG from_dict flags keys: {list(saved_flags.keys())}", file=_sys2.stderr)
-            print(f"DEBUG spec_type in flags: {'spec_type' in saved_flags}, val={saved_flags.get('spec_type')!r}", file=_sys2.stderr)
             self.config.from_dict(saved_flags)
-            print(f"DEBUG after from_dict spec_type={self.config.spec_type!r}", file=_sys2.stderr)
         self._restore_vars(saved_flags)
-        print(f"DEBUG after restore spec_type={self.config.spec_type!r}", file=_sys2.stderr)
 
         # Scan hardware info for display (read-only, not saved to config)
         try:
@@ -329,18 +325,12 @@ class LlamaServerGUI:
         # Change handlers — update config state and trigger command rebuild
         def _on_no_mmap_change(*_):
             try:
-                if lv_bool_no_mmap.get():
-                    ml_bool_mlock.set(False)
-                    self.config.mlock = False
                 self.config.no_mmap = bool(lv_bool_no_mmap.get())
             except Exception:
                 pass
 
         def _on_mlock_change(*_):
             try:
-                if ml_bool_mlock.get():
-                    lv_bool_no_mmap.set(False)
-                    self.config.no_mmap = False
                 self.config.mlock = bool(ml_bool_mlock.get())
             except Exception:
                 pass
