@@ -10,28 +10,26 @@ gui = LlamaServerGUI(root)
 # Disable mouse scroll wheel to prevent accidental value changes
 def _no_scroll(event):
     return "break"
-root.bind("<MouseWheel>", _no_scroll)  # Windows/Linux
-root.bind("<Button-4>", _no_scroll)   # macOS trackpad
-root.bind("<Button-5>", _no_scroll)   # macOS trackpad
+root.bind("<MouseWheel>", _no_scroll)
 
 root.title("llama-server command generator")
-# Set fixed startup size, centered on screen
-screen_w = root.winfo_screenwidth()
-screen_h = root.winfo_screenheight()
-x_pos = max(0, (screen_w - 764) // 2)
-y_pos = max(0, (screen_h - 593) // 2)
-root.geometry(f"764x693+{x_pos}+{y_pos}")
-# Grid layout with sticky="nswe" makes all widgets fill the window.
-if sys.platform == "darwin":  # macOS: native WM supports -zoomed natively
-    root.attributes('-zoomed', True)
-elif not sys.platform.startswith("win"):  # Linux / X11 via xdotool if available
-    import subprocess, time as _time_mod
-    try:
-        root.update_idletasks()
-        w = max(root.winfo_screenwidth(), root.winfo_reqwidth())
-        h = max(root.winfo_screenheight(), root.winfo_reqheight())
-        subprocess.run(["xdotool", "windowsize", str(root.winfo_id()), str(w), str(h)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except (FileNotFoundError, Exception):
-        pass  # xdotool not available normal window is fine
+# Restore saved window geometry or default to centered
+try:
+    import json as _json, os as _os
+    _cfg_path = _os.path.join(_os.getcwd(), "llama_gui_data.json")
+    with open(_cfg_path, "r", encoding="utf-8") as _f:
+        _saved = _json.load(_f)
+    geom = _saved.get("window_geometry", "764x693")
+    root.geometry(geom)
+    root.update_idletasks()
+    state = _saved.get("window_state", "normal")
+    if state == "zoomed":
+        root.state("zoomed")
+except Exception:
+    screen_w = root.winfo_screenwidth()
+    screen_h = root.winfo_screenheight()
+    x_pos = max(0, (screen_w - 764) // 2)
+    y_pos = max(0, (screen_h - 593) // 2)
+    root.geometry(f"764x693+{x_pos}+{y_pos}")
 
 root.mainloop()

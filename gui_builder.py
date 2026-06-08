@@ -127,7 +127,7 @@ class FlagConfig:
 
         # Add context size only when the toggle is enabled
         ctx_val = max(2, min(int(str(self.ctx_size_value)), 999999999))
-        parts.append(f" --ctx-size {ctx_val}")
+        parts.append(f" -c {ctx_val}")
 
         # Server settings always included
         host = str(self.host).strip() or "0.0.0.0"
@@ -502,11 +502,16 @@ class LlamaServerGUI:
 # ---------------------------------------------------------------------------
 
     def _on_close(self):
-        """Save config (flags + folder) before closing."""
+        """Save config (flags + folder + window geometry) before closing."""
         try:
             data = _load_config()
             data["flags"] = self.config.to_dict()
             data["last_folder"] = self._last_folder
+            try:
+                data["window_geometry"] = self.root.geometry()
+                data["window_state"] = self.root.state()
+            except Exception:
+                pass
             _save_config(data)
         except Exception:
             pass
@@ -801,7 +806,7 @@ class LlamaServerGUI:
         ctx_frame = ttk.Frame(frame)
         ctx_frame.grid(row=0, column=0, sticky="nsew")
 
-        iv_ctx_var = tk.IntVar(value=512)
+        iv_ctx_var = tk.IntVar(value=self.config.ctx_size_value)
 
         def _on_ctx_val(*_):
             try:
@@ -812,7 +817,7 @@ class LlamaServerGUI:
             except (ValueError, TypeError, tk.TclError):
                 pass
 
-        ttk.Label(ctx_frame, text="Ctx Size").pack(side="left")
+        ttk.Label(ctx_frame, text="Context").pack(side="left")
         ttk.Entry(ctx_frame, textvariable=iv_ctx_var, width=8).pack(side="left", padx=(4, 0))
 
         def _ctx_value_trace(*_):
@@ -931,28 +936,51 @@ class LlamaServerGUI:
         spec_row.grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         iv_spec_enabled = self._tk["spec_enabled"]
-        import sys as _sys3
-        print(f"DEBUG UI spec_type={self.config.spec_type!r}", file=_sys3.stderr)
-        sv_spec_type = tk.StringVar(value=self.config.spec_type)
-        def _on_spec_type_change(*_):
+        iv_spec_ngram = tk.BooleanVar(value=(self.config.spec_type == "ngram-mod"))
+        iv_spec_draft = tk.BooleanVar(value=(self.config.spec_type == "draft-mtp"))
+
+        # Sub-options row (hidden until spec enabled)
+        spec_sub_row = ttk.Frame(frame)
+        tk.Checkbutton(spec_sub_row, text="ngram-mod", variable=iv_spec_ngram).pack(side="left")
+        tk.Checkbutton(spec_sub_row, text="draft-mtp", variable=iv_spec_draft).pack(side="left", padx=(16, 0))
+
+        def _on_spec_toggle(*_):
             try:
-                val = sv_spec_type.get()
-                if val in ("ngram-mod", "draft-mtp"):
-                    self.config.spec_type = val
+                enabled = iv_spec_enabled.get()
+                self.config.spec_enabled = enabled
+                if enabled:
+                    spec_sub_row.pack()
+                    if not iv_spec_ngram.get() and not iv_spec_draft.get():
+                        iv_spec_ngram.set(True)
+                        self.config.spec_type = "ngram-mod"
+                else:
+                    spec_sub_row.pack_forget()
+                    iv_spec_ngram.set(False)
+                    iv_spec_draft.set(False)
+                    self.config.spec_type = "ngram-mod"
+                self._update_command()
             except Exception:
                 pass
-        def _save_on_change(*_):
+
+        def _on_spec_sub(*_):
             try:
-                data = _load_config()
-                data["flags"] = self.config.to_dict()
-                data["last_folder"] = self._last_folder
-                _save_config(data)
+                if iv_spec_draft.get():
+                    iv_spec_ngram.set(False)
+                    self.config.spec_type = "draft-mtp"
+                elif iv_spec_ngram.get():
+                    iv_spec_draft.set(False)
+                    self.config.spec_type = "ngram-mod"
+                self._update_command()
             except Exception:
                 pass
-        sv_spec_type.trace_add("write", lambda *_: (_on_spec_type_change(), self._update_command(), _save_on_change()))
 
         tk.Checkbutton(spec_row, text="Speculative Decoding", variable=iv_spec_enabled).pack(side="left")
-        ttk.OptionMenu(spec_row, sv_spec_type, "ngram-mod", "ngram-mod", "draft-mtp").pack(side="left", padx=(8, 0))
+        iv_spec_enabled.trace_add("write", lambda *_: _on_spec_toggle())
+        iv_spec_ngram.trace_add("write", lambda *_: _on_spec_sub())
+        iv_spec_draft.trace_add("write", lambda *_: _on_spec_sub())
+        # Show sub-options if spec was already enabled on load
+        if self.config.spec_enabled:
+            spec_sub_row.pack()
 
         # --- Batch Size, Micro-Batch, and Threads spinboxes (row 3, three columns) ---
         mb_row = ttk.Frame(frame)
@@ -1742,9 +1770,7 @@ class LlamaServerGUI:
         filepath = os.path.join(result["folder"], result["filename"])
         try:
             with open(filepath, "w", encoding="utf-8") as f:
-                f.write("@echo off\n")
-                f.write(f'"{cmd}"\n')
-                f.write("pause\n")
+                f.write(cmd)
             _save_last_folder(result["folder"])
             messagebox.showinfo("Saved", f"Saved as:\n{filepath}")
         except Exception as e:
