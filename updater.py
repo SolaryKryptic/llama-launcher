@@ -15,7 +15,7 @@ def get_current_version():
     match = re.search(r"v?(\d+\.\d+\.\d+)", running_filename)
     if match:
         return match.group(1)
-    return "1.0.4"
+    return "1.0.5"
     # Fallback version for when you run the raw .py file in your IDE
 
 # Automatically sets itself based on the file name
@@ -107,8 +107,7 @@ def apply_update_and_restart(current_path, temp_path, root_window):
         batch_cmd = (
             f'timeout /t 2 > nul && '
             f'del "{current_path}" && '
-            f'move "{temp_path}" "{current_path}" && '
-            f'start "" "{current_path}"'
+            f'move "{temp_path}" "{current_path}"'
         )
         subprocess.Popen(batch_cmd, shell=True, creationflags=subprocess.CREATE_NEW_CONSOLE)
     else:
@@ -122,6 +121,7 @@ def apply_update_and_restart(current_path, temp_path, root_window):
         subprocess.Popen(bash_cmd, shell=True, start_new_session=True)
 
     # Immediately close the current instance so the updater script can write over the file
+    messagebox.showinfo("Update Complete", "Update downloaded. Please relaunch the app.")
     root_window.destroy()
     sys.exit()
 
