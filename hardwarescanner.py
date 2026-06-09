@@ -17,16 +17,20 @@ def scan_hardware():
             # 1b. CPU cores & threads
             try:
                 cores_out = subprocess.check_output("wmic cpu get NumberOfCores", shell=True).decode().strip()
+                cores_lines = [x.strip() for x in cores_out.split("\n") if x.strip().isdigit()]
+                hardware["CPU_CORES"] = sum(int(x) for x in cores_lines)  # sum both sockets
                 threads_out = subprocess.check_output("wmic cpu get NumberOfLogicalProcessors", shell=True).decode().strip()
-                hardware["CPU_CORES"] = int(cores_out.split("\n")[-1].strip())
-                hardware["CPU_THREADS"] = int(threads_out.split("\n")[-1].strip())
+                threads_lines = [x.strip() for x in threads_out.split("\n") if x.strip().isdigit()]
+                hardware["CPU_THREADS"] = sum(int(x) for x in threads_lines)
             except Exception:
                 hardware["CPU_CORES"] = 0
                 hardware["CPU_THREADS"] = 0
 
             # 2. System RAM
             ram_out = subprocess.check_output("wmic computersystem get totalphysicalmemory", shell=True).decode().strip()
-            hardware["RAM"] = f"{int(ram_out.split('\n')[-1].strip()) / (1024**3):.2f} GB"
+            ram_lines = [x.strip() for x in ram_out.split("\n") if x.strip().isdigit()]
+            if ram_lines:
+                hardware["RAM"] = f"{int(ram_lines[0]) / (1024**3):.2f} GB"
 
             # 3. GPU Model Name (Isolating physical PCIe adapters from virtual layers)
             ps_gpu_cmd = (
