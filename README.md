@@ -58,5 +58,7 @@ llama-launcher/
 ├── gui_builder.py       # Full GUI logic, sections, command generation, optimiser
 ├── hardwarescanner.py   # WMI-based hardware detection (CPU/GPU/VRAM/RAM)
 ├── optimiser_script.py  # Benchmark runner and result parser
-└── llama_gui_data.json  # Auto-generated config (saved settings)
+├── llama_gui_data.json  # Auto-generated config (saved settings)
+└── updater.py
+
 ```
