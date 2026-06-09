@@ -927,13 +927,13 @@ class LlamaServerGUI:
 
 
     def _section_context_gpu(self, parent):
-        """context size and gpu layers section, side by side columns"""
+        """context size and gpu layers section, inline on the same row"""
         frame = ttk.LabelFrame(parent, text="Performance", padding=(8, 6))
         frame.pack(fill="both", padx=6, pady=4)
+        frame.grid_columnconfigure(0, weight=1)
 
-        # Left column is for Context Size options
         ctx_frame = ttk.Frame(frame)
-        ctx_frame.grid(row=0, column=0, sticky="nsew")
+        ctx_frame.grid(row=0, column=0, sticky="w")
 
         iv_ctx_var = tk.IntVar(value=self.config.ctx_size_value)
 
@@ -959,14 +959,9 @@ class LlamaServerGUI:
 
         iv_ctx_var.trace_add("write", lambda *_: (_ctx_value_trace(), self._update_command()))
 
-        # Right column holds GPU layer settings
-        gpu_frame = ttk.Frame(frame)
-        gpu_frame.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
-
         iv_auto_gpu = self._tk["n_gpu_layers"]
 
-        label = ttk.Label(gpu_frame, text="GPU Layers")
-        label.pack(side="left")
+        ttk.Label(ctx_frame, text="GPU Layers").pack(side="left", padx=(16, 0))
 
         # Spinbox for GPU layers from -1 to 99
         spinvar = tk.IntVar(value=self.config.n_gpu_layers)
@@ -1002,7 +997,7 @@ class LlamaServerGUI:
 
         spinvar.trace_add("write", lambda *_: (_spinvar_safe(), self._update_command()))
 
-        spinbox_gpu = ttk.Spinbox(gpu_frame, from_=-1, to=99, textvariable=spinvar, width=5)
+        spinbox_gpu = ttk.Spinbox(ctx_frame, from_=-1, to=99, textvariable=spinvar, width=5)
         spinbox_gpu.pack(side="left")
 
         def _gpu_wheel(event):
