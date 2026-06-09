@@ -73,7 +73,7 @@ def scan_hardware():
             if vram_raw and vram_raw.isdigit():
                 vram_bytes = int(vram_raw)
                 # If Windows still tries to pass a legacy 4GB integer limitation, force standard math checks
-                if vram_bytes <= 4294967295:
+                if vram_bytes == 4294967295:
                     # Alternative check: Fallback to querying DXGI adapter limits safely via task manager bindings
                     hardware["VRAM"] = "Check AMD Software (WMI Restricted)"
                 else:
