@@ -67,6 +67,7 @@ class FlagConfig:
         self.spec_type = "ngram-mod"  # spec strategy, e g ngram mod or draft mtp
         self.spec_draft_n_max = 0       # spec draft max, 0 means unset
         self.spec_draft_n_min = 0       # spec draft min, 0 means unset
+        self.draft_model_path = ""       # draft model path for draft-mtp
 
         self.cache_type_k = "f16"      # kv cache type k
         self.cache_type_v = "f16"      # kv cache type v
@@ -122,6 +123,9 @@ class FlagConfig:
                 parts.append(f" --spec-draft-n-max {self.spec_draft_n_max}")
             if self.spec_draft_n_min > 0:
                 parts.append(f" --spec-draft-n-min {self.spec_draft_n_min}")
+            draft_path = self.draft_model_path.strip()
+            if draft_path:
+                parts.append(f' --model-draft "{draft_path}"')
 
         # cache types always included
         parts.append(f" -ctk {self.cache_type_k}")
@@ -187,6 +191,7 @@ class FlagConfig:
             "spec_type": self.spec_type,
             "spec_draft_n_max": self.spec_draft_n_max,
             "spec_draft_n_min": self.spec_draft_n_min,
+            "draft_model_path": self.draft_model_path,
             "batch_size": self.batch_size,
             "micro_batch_size": self.micro_batch_size,
             "threads": self.threads,
@@ -1058,10 +1063,16 @@ class LlamaServerGUI:
         spec_sub_row = ttk.Frame(spec_frame)
         tk.Checkbutton(spec_sub_row, text="ngram-mod", variable=iv_spec_ngram).pack(side="left")
         tk.Checkbutton(spec_sub_row, text="draft-mtp", variable=iv_spec_draft).pack(side="left", padx=(16, 0))
-        ttk.Label(spec_sub_row, text="Max:").pack(side="left", padx=(12, 0))
-        ttk.Spinbox(spec_sub_row, from_=0, to=64, textvariable=iv_spec_draft_max, width=4).pack(side="left", padx=(2, 0))
-        ttk.Label(spec_sub_row, text="Min:").pack(side="left", padx=(12, 0))
-        ttk.Spinbox(spec_sub_row, from_=0, to=64, textvariable=iv_spec_draft_min, width=4).pack(side="left", padx=(2, 0))
+
+        # Draft model inline block: browse button + label + max/min spinboxes
+        spec_draft_row = ttk.Frame(spec_sub_row)
+        ttk.Button(spec_draft_row, text="Browse draft models...", command=self._browse_draft_model).pack(side="left", padx=(12, 0))
+        self.draft_model_label = tk.Label(spec_draft_row, text="", anchor="w", justify="left", foreground="#666")
+        self.draft_model_label.pack(side="left", padx=(4, 0))
+        ttk.Label(spec_draft_row, text="Max:").pack(side="left", padx=(12, 0))
+        ttk.Spinbox(spec_draft_row, from_=0, to=64, textvariable=iv_spec_draft_max, width=4).pack(side="left", padx=(2, 0))
+        ttk.Label(spec_draft_row, text="Min:").pack(side="left", padx=(12, 0))
+        ttk.Spinbox(spec_draft_row, from_=0, to=64, textvariable=iv_spec_draft_min, width=4).pack(side="left", padx=(2, 0))
 
         def _update_spec_type():
             """build spec_type string from both checkboxes"""
@@ -1090,6 +1101,16 @@ class LlamaServerGUI:
         def _on_spec_sub(*_):
             try:
                 _update_spec_type()
+                if iv_spec_draft.get():
+                    spec_draft_row.pack()
+                else:
+                    spec_draft_row.pack_forget()
+                    self.config.draft_model_path = ""
+                    self.config.spec_draft_n_max = 0
+                    self.config.spec_draft_n_min = 0
+                    self.draft_model_label.config(text="")
+                    iv_spec_draft_max.set(0)
+                    iv_spec_draft_min.set(0)
                 self._update_command()
             except Exception:
                 pass
@@ -1114,6 +1135,12 @@ class LlamaServerGUI:
         # Show sub-options if spec was already enabled on load
         if self.config.spec_enabled:
             spec_sub_row.pack()
+            if iv_spec_draft.get():
+                spec_draft_row.pack()
+        # Restore draft model label if saved
+        if self.config.draft_model_path:
+            display = os.path.basename(self.config.draft_model_path).rsplit(".gguf", 1)[0]
+            self.draft_model_label.config(text=display)
 
         # --- Batch Size, Micro-Batch, and Threads spinboxes (row 3, three columns) ---
         mb_row = ttk.Frame(frame)
@@ -1445,6 +1472,22 @@ class LlamaServerGUI:
             self._tk["model_path"].set(path)
             self._last_folder = os.path.dirname(path)
             _save_last_folder(self._last_folder)
+            self._update_command()
+
+    def _browse_draft_model(self):
+        """open file dialog to select draft model for draft-mtp"""
+        initialdir = self._last_folder if self._last_folder and os.path.isdir(self._last_folder) else os.path.expanduser("~")
+        path = filedialog.askopenfilename(
+            title="Select Draft Model File",
+            filetypes=[("GGUF files", "*.gguf"), ("All files", "*.*")],
+            initialdir=initialdir,
+        )
+        if path:
+            self.config.draft_model_path = path
+            self._last_folder = os.path.dirname(path)
+            _save_last_folder(self._last_folder)
+            display = os.path.basename(path).rsplit(".gguf", 1)[0]
+            self.draft_model_label.config(text=display)
             self._update_command()
 
     def _open_huggingface(self):

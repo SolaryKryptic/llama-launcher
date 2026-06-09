@@ -15,9 +15,8 @@ def get_current_version():
     match = re.search(r"v?(\d+\.\d+\.\d+)", running_filename)
     if match:
         return match.group(1)
-    
+    return "1.0.4"
     # Fallback version for when you run the raw .py file in your IDE
-    return "1.0.3"
 
 # Automatically sets itself based on the file name
 CURRENT_VERSION = get_current_version() 
