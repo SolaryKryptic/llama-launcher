@@ -1,7 +1,7 @@
 import tkinter as tk
 sys = __import__('sys')  # import sys for platform detection after path manipulation
 sys.path.insert(0, '.')
-
+import updater
 from gui_builder import LlamaServerGUI
 
 root = tk.Tk()
@@ -12,7 +12,9 @@ def _no_scroll(event):
     return "break"
 root.bind("<MouseWheel>", _no_scroll)
 
-root.title("llama-launcher")
+# UPDATED: Use the dynamic version from updater.py so it matches your GitHub file tags
+root.title(f"llama-launcher - v{updater.CURRENT_VERSION}")
+
 # Restore saved window geometry or default to centered
 try:
     import json as _json, os as _os
@@ -31,5 +33,8 @@ except Exception:
     x_pos = max(0, (screen_w - 764) // 2)
     y_pos = max(0, (screen_h - 593) // 2)
     root.geometry(f"764x693+{x_pos}+{y_pos}")
+
+# ADDED: Automatically launch the silent background update check 1 second after startup
+root.after(1000, lambda: updater.check_for_updates(root))
 
 root.mainloop()
