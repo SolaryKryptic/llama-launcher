@@ -40,7 +40,7 @@ Point-and-click interface to configure and generate `llama-server` command-line 
 
 ## Requirements
 
-- Python 3.7+ (uses `tkinter` — included with standard Python installations)
+- Python 3.7+
 - Windows (hardware scanner uses WMI / PowerShell)
 - No third-party dependencies required
 
