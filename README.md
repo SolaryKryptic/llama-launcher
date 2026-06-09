@@ -6,6 +6,8 @@ A Python GUI application for generating [llama.cpp](https://github.com/ggerganov
 
 Point-and-click interface to configure and generate `llama-server` command-line arguments without typing them manually. Select your GGUF model, adjust settings, run the command.
 
+<img width="963" height="1022" alt="image" src="https://github.com/user-attachments/assets/39a29d70-0d94-4863-a7ba-62bc3b72acd1" />
+
 ## Features
 
 ### System Hardware
