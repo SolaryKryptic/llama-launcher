@@ -57,11 +57,12 @@ class FlagConfig:
 
         self.flash_attention = False    # enable flash attention
         self.fit_on = False             # enable fit on to fit model to gpu vram
+        self.fitt = 1024               # -fitt N value when fit-on enabled
 
         self.batch_size = 2048          # batch size for kv cache, typical 1 to 8192
         self.micro_batch_size = 512     # micro batch for memory split, 1 to 8192
         self.threads = -1               # thread count, -1 means auto detect
-        self.thread_batch = 0           # thread batch value, 0 means unset
+        self.thread_batch = -1          # thread batch value, -1 means unset
 
         self.spec_enabled = False       # enable speculative decoding
         self.spec_type = "ngram-mod"  # spec strategy, e g ngram mod or draft mtp
@@ -105,6 +106,7 @@ class FlagConfig:
             parts.append(" -fa on")
         if self.fit_on:
             parts.append(" --fit on")
+            parts.append(f" -fitt {self.fitt}")
 
         # batch size, micro batch and threads included when set, -t skipped for -1
         parts.append(f" -b {self.batch_size}")
@@ -187,6 +189,7 @@ class FlagConfig:
             "threads_enabled": self.threads_enabled,
             "flash_attention": self.flash_attention,
             "fit_on": self.fit_on,
+            "fitt": self.fitt,
             "spec_enabled": self.spec_enabled,
             "spec_type": self.spec_type,
             "spec_draft_n_max": self.spec_draft_n_max,
@@ -242,6 +245,7 @@ class LlamaServerGUI:
         # Flash Attention / Fit On checkboxes
         iv_flash_attn = tk.BooleanVar(value=False)
         iv_fit_on = tk.BooleanVar(value=False)
+        iv_fitt = tk.IntVar(value=1024)
 
         # Speculative decoding toggle
         iv_spec_enabled = tk.BooleanVar(value=False)
@@ -250,7 +254,7 @@ class LlamaServerGUI:
         iv_batch_size = tk.IntVar(value=2048)
         iv_micro_batch = tk.IntVar(value=512)
         iv_threads_val_new = tk.IntVar(value=-1)
-        iv_thread_batch = tk.IntVar(value=0)
+        iv_thread_batch = tk.IntVar(value=-1)
 
         # Cache type K and V dropdowns
         CACHE_TYPES = ["f16", "f32", "q8_0", "q5_0", "q4_0"]
@@ -282,6 +286,7 @@ class LlamaServerGUI:
             "ctx_size_enabled": iv_ctx_enabled,
             "flash_attention": iv_flash_attn,
             "fit_on": iv_fit_on,
+            "fitt": iv_fitt,
             "spec_enabled": iv_spec_enabled,
             "batch_size": iv_batch_size,
             "micro_batch": iv_micro_batch,
@@ -314,6 +319,7 @@ class LlamaServerGUI:
             "ctx_size_enabled": iv_ctx_enabled,
             "flash_attention": iv_flash_attn,
             "fit_on": iv_fit_on,
+            "fitt": iv_fitt,
             "spec_enabled": iv_spec_enabled,
             "batch_size": iv_batch_size,
             "micro_batch": iv_micro_batch,
@@ -392,6 +398,13 @@ class LlamaServerGUI:
             try:
                 self.config.fit_on = bool(iv_fit_on.get())
             except Exception:
+                pass
+
+        def _on_fitt_change(*_):
+            try:
+                raw = iv_fitt.get()
+                self.config.fitt = max(1, min(raw, 65536))
+            except (ValueError, TypeError, tk.TclError):
                 pass
 
         def _on_batch_size_change(*_):
@@ -519,6 +532,7 @@ class LlamaServerGUI:
         # Flash Attention / Fit On traces
         iv_flash_attn.trace_add("write", lambda *_: (_on_flash_attn_change(), self._update_command()))
         iv_fit_on.trace_add("write", lambda *_: (_on_fit_on_change(), self._update_command()))
+        iv_fitt.trace_add("write", lambda *_: (_on_fitt_change(), self._update_command()))
 
         def _save_on_close(*_):
             try:
@@ -601,6 +615,11 @@ class LlamaServerGUI:
         if "fit_on" in saved_flags:
             try:
                 tk["fit_on"].set(bool(saved_flags["fit_on"]))
+            except (ValueError, TypeError):
+                pass
+        if "fitt" in saved_flags:
+            try:
+                tk["fitt"].set(int(saved_flags["fitt"]))
             except (ValueError, TypeError):
                 pass
         if "spec_enabled" in saved_flags:
@@ -1026,9 +1045,9 @@ class LlamaServerGUI:
         def _on_thread_batch_change(*_):
             try:
                 raw = iv_thread_batch.get()
-                val = int(raw) if raw else 0
-                if not (0 <= val <= 512): return
-                self.config.thread_batch = max(0, min(val, 512))
+                val = int(raw) if raw else -1
+                if not (-1 <= val <= 512): return
+                self.config.thread_batch = max(-1, min(val, 512))
             except (ValueError, TypeError, tk.TclError):
                 pass
 
@@ -1038,8 +1057,11 @@ class LlamaServerGUI:
 
         iv_flash_attn = self._tk["flash_attention"]
         iv_fit_on = self._tk["fit_on"]
+        iv_fitt = self._tk["fitt"]
         tk.Checkbutton(fa_row, text="Flash Attention (-fa)", variable=iv_flash_attn).pack(side="left")
         tk.Checkbutton(fa_row, text="Fit On (--fit-on)", variable=iv_fit_on).pack(side="left", padx=(16, 0))
+        ttk.Label(fa_row, text="Fit Target").pack(side="left", padx=(8, 0))
+        ttk.Spinbox(fa_row, from_=1, to=65536, textvariable=iv_fitt, width=5).pack(side="left", padx=(2, 0))
 
         # --- Speculative Decoding (row 2, full width) ---
         spec_frame = ttk.Frame(frame)
@@ -1175,7 +1197,7 @@ class LlamaServerGUI:
             (iv_batch_size, "Batch Size", 1, 8192, _on_batch_size_change),
             (iv_micro_batch, "Micro-Batch", 1, 8192, _on_micro_batch_change),
             (iv_threads_val_new, "Threads", -1, 128, _on_threads_new_change),
-            (iv_thread_batch, "Thread Batch", 0, 512, _on_thread_batch_change),
+            (iv_thread_batch, "Thread Batch", -1, 512, _on_thread_batch_change),
         ]:
             col = ttk.Frame(mb_row)
             col.pack(side="left", padx=(0, 12))
