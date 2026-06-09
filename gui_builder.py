@@ -1434,14 +1434,17 @@ class LlamaServerGUI:
 
     def _browse_model(self):
         """open file dialog to select gguf model file"""
+        initialdir = self._last_folder if self._last_folder and os.path.isdir(self._last_folder) else os.path.expanduser("~")
         path = filedialog.askopenfilename(
             title="Select GGUF Model File",
             filetypes=[("GGUF files", "*.gguf"), ("All files", "*.*")],
-            initialdir=os.path.expanduser("~"),  # start in the user's home directory
+            initialdir=initialdir,
         )
         if path:
             self.config.model_path = path
             self._tk["model_path"].set(path)
+            self._last_folder = os.path.dirname(path)
+            _save_last_folder(self._last_folder)
             self._update_command()
 
     def _open_huggingface(self):
