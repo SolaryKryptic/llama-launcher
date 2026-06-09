@@ -1161,7 +1161,7 @@ class LlamaServerGUI:
                 spec_draft_row.pack()
         # Restore draft model label if saved
         if self.config.draft_model_path:
-            display = os.path.basename(self.config.draft_model_path).rsplit(".gguf", 1)[0]
+            display = "Using: " + os.path.basename(self.config.draft_model_path).rsplit(".gguf", 1)[0]
             self.draft_model_label.config(text=display)
 
         # --- Batch Size, Micro-Batch, and Threads spinboxes (row 3, three columns) ---
