@@ -1520,318 +1520,173 @@ class LlamaServerGUI:
         bench_exe = "llama-bench.exe"
         return {"ok": True, "model_path": self.config.model_path, "bench_exe": bench_exe}
 
-    def _build_optimiser_params(self):
-        """build sweep parameters for optimiser, return dict of lists and limits"""
-        import itertools as _it
+    def _show_optimiser_config_dialog(self):
+        """Show dialog asking for metric weight and context size. Returns (weight, ctx) or None if cancelled."""
+        import tkinter as tk
+        result = [None]
 
-        logical_cores = os.cpu_count() or 4
-        cap_limit = max(1, int(logical_cores * 0.75))
-        step_size = max(1, int(logical_cores * 0.25))
-        threads_list = [t for t in range(step_size, cap_limit + 1, step_size)]
-        if cap_limit not in threads_list:
-            threads_list.append(cap_limit)
+        dlg = Toplevel(self.root)
+        dlg.title("Optimiser Settings")
+        dlg.geometry("360x200")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        dlg.resizable(False, False)
 
-        batch_sizes = [512, 1024, 2048]
-        fitt_targets = [1024, 512, 256]
-        cache_k_types = ["f16", "q8_0", "q4_0"]
+        ttk.Label(dlg, text="Optimiser Settings", font=("Segoe UI", 11, "bold")).pack(pady=(12, 6))
 
-        return {
-            "threads": threads_list,
-            "batch_sizes": batch_sizes,
-            "fitt_targets": fitt_targets,
-            "cache_k_types": cache_k_types,
-            "cap_limit": cap_limit,
-            "step_size": step_size,
-            "logical_cores": logical_cores,
-        }
+        # Metric weight
+        row1 = ttk.Frame(dlg)
+        row1.pack(fill="x", padx=20, pady=4)
+        ttk.Label(row1, text="Metric Weight (0=TG focus, 0.5=balanced, 1=PP focus):", width=52).pack(anchor="w")
+        weight_var = tk.DoubleVar(value=0.5)
+        ttk.Spinbox(row1, from_=0.0, to=1.0, increment=0.05, textvariable=weight_var,
+                    width=8, format="%.2f").pack(anchor="w", pady=2)
 
-    def _build_bench_cmd(self, bench_exe, model_path, threads=None, batch=None, micro_batch=None,
-                         fitt=None, ctx_size=16384, ctk="f16", ctv="f16", is_base=False):
-        """build llama bench command, is_base runs baseline without extra flags, otherwise include parameters"""
-        cmd = [bench_exe, "-m", model_path, "-o", "md", "--no-warmup",
-               "-fitc", str(ctx_size), "-r", "3"]
-        if not is_base:
-            cmd += ["-t", str(threads), "-b", str(batch), "-ub", str(micro_batch),
-                    "-fa", "auto", "-fitt", str(fitt), "-ctk", ctk, "-ctv", ctv]
-        return cmd
+        # Context size
+        row2 = ttk.Frame(dlg)
+        row2.pack(fill="x", padx=20, pady=4)
+        ttk.Label(row2, text="Context Size:").pack(anchor="w")
+        ctx_var = tk.IntVar(value=16384)
+        ttk.Spinbox(row2, from_=512, to=131072, increment=512, textvariable=ctx_var, width=10).pack(anchor="w", pady=2)
 
-    @staticmethod
-    def _parse_bench_results(output):
-        """parse prompt pp512, text gen tg128 tps from llama bench output"""
-        import re as _re
-        results = {}
-        for line in output.splitlines():
-            if "pp512" in line:
-                parts = [p.strip() for p in line.split("|")]
-                tps = parts[-2].split("\u00b1")[0].strip()
-                tps = _re.sub(r"[^\d.]", "", tps)
-                results["pp512"] = float(tps)
-            elif "tg128" in line:
-                parts = [p.strip() for p in line.split("|")]
-                tps = parts[-2].split("\u00b1")[0].strip()
-                tps = _re.sub(r"[^\d.]", "", tps)
-                results["tg128"] = float(tps)
-        return results
+        def _ok():
+            result[0] = (weight_var.get(), ctx_var.get())
+            dlg.destroy()
 
-    @staticmethod
-    def _calculate_score(pp, tg, metric_weight=0.5):
-        """dual metric weighted score"""
-        return (pp * metric_weight) + (tg * (1.0 - metric_weight))
+        def _cancel():
+            dlg.destroy()
 
-    def _run_optimisation(self, bench_exe, model_path, progress_var,
-                          label_var, score_var, remaining_var, cancel_flag):
-        """run two stage optimiser, update tk variables via root after, return final config via holder"""
-        import subprocess as _sub
-        import itertools as _it
-        import time as _time
+        btn_row = ttk.Frame(dlg)
+        btn_row.pack(pady=8)
+        ttk.Button(btn_row, text="Start", command=_ok).pack(side="left", padx=6)
+        ttk.Button(btn_row, text="Cancel", command=_cancel).pack(side="left", padx=6)
 
-        params = self._build_optimiser_params()
-        ctx_size = 16384
-        metric_weight = 0.5
+        dlg.wait_window()
+        return result[0]
 
-        def run_one(t=None, b=None, fitt=None, cache_k=None, is_base=False):
-            cmd = self._build_bench_cmd(
-                bench_exe, model_path,
-                threads=t, batch=b, micro_batch=fitt,
-                fitt=fitt, ctx_size=ctx_size,
-                ctk=cache_k, ctv="f16", is_base=is_base)
-            try:
-                proc = _sub.run(
-                    cmd, capture_output=True, text=True, errors="ignore",
-                    timeout=300  # hard cap per run (5 min)
-                )
-                if proc.returncode != 0:
-                    return None, None
-                results = self._parse_bench_results(proc.stdout)
-                pp = results.get("pp512", 0.0)
-                tg = results.get("tg128", 0.0)
-                if pp == 0.0 and tg == 0.0:
-                    return None, None
-                return pp, tg
-            except Exception:
-                return None, None
-
-        def calc(pp, tg):
-            if pp is None or tg is None:
-                return -1.0
-            return self._calculate_score(pp, tg, metric_weight)
-
-        # --- STAGE 1: Sequential greedy screening ---
-        best_threads = params["threads"][-1]
-        best_batch = params["batch_sizes"][0]
-        best_fitt = params["fitt_targets"][0]
-        best_cache_k = params["cache_k_types"][0]
-
-        global_best_score = -1.0
-        global_best_pp = 0.0
-        global_best_tg = 0.0
-
-        total_runs = len(params["threads"]) + len(params["batch_sizes"]) + \
-                     len(params["fitt_targets"]) + len(params["cache_k_types"])
-        elapsed_start = None
-
-        def update_progress(step_name, param_name, value, run_idx):
-            total_runs_count = (
-                len(params["threads"]) + len(params["batch_sizes"])
-                + len(params["fitt_targets"]) + len(params["cache_k_types"])
-                + 6  # approximate neighbourhood grid size
-            )
-            pct = max(0.0, min(run_idx / total_runs_count * 100, 99.9))
-            self.root.after(0, lambda p=pct: progress_var.set(p))
-            self.root.after(0, lambda msg=f"{step_name}: {param_name}={value}": label_var.set(msg))
-            try:
-                now = _time.time()
-                if elapsed_start is not None:
-                    elapsed = now - elapsed_start
-                    avg_per_run = elapsed / run_idx
-                    remaining = int(avg_per_run * (total_runs_count - run_idx))
-                    self.root.after(0, lambda r=remaining: remaining_var.set(f"~{r}s remaining"))
-            except Exception:
-                pass
-
-        # 1. Threads
-        self.root.after(0, lambda: label_var.set("Stage 1 — Optimising threads..."))
-        for t in params["threads"]:
-            if cancel_flag[0]:
-                return None
-            pp, tg = run_one(t=t, b=best_batch, fitt=best_fitt, cache_k=best_cache_k)
-            score = calc(pp, tg)
-            if score > 0:
-                if score >= global_best_score:
-                    global_best_score = score
-                    global_best_pp = pp or 0.0
-                    global_best_tg = tg or 0.0
-                if score >= calc(None, None) or True:  # always track stage best
-                    best_threads = t
-                self.root.after(0, lambda s=f"pp={pp:.2f} tg={tg:.2f}": label_var.set(s))
-                self.root.after(0, lambda sc=score: score_var.set(sc))
-
-        # 2. Batch size
-        self.root.after(0, lambda: label_var.set("Stage 1 — Optimising batch size..."))
-        for b in params["batch_sizes"]:
-            if cancel_flag[0]:
-                return None
-            pp, tg = run_one(t=best_threads, b=b, fitt=best_fitt, cache_k=best_cache_k)
-            score = calc(pp, tg)
-            if score > 0:
-                if score >= global_best_score:
-                    global_best_score = score
-                    global_best_pp = pp or 0.0
-                    global_best_tg = tg or 0.0
-                best_batch = b
-                self.root.after(0, lambda sc=score: score_var.set(sc))
-
-        # 3. FITT target
-        self.root.after(0, lambda: label_var.set("Stage 1 — Optimising FITT target..."))
-        for fitt in params["fitt_targets"]:
-            if cancel_flag[0]:
-                return None
-            pp, tg = run_one(t=best_threads, b=best_batch, fitt=fitt, cache_k=best_cache_k)
-            score = calc(pp, tg)
-            if score > 0:
-                if score >= global_best_score:
-                    global_best_score = score
-                    global_best_pp = pp or 0.0
-                    global_best_tg = tg or 0.0
-                best_fitt = fitt
-                self.root.after(0, lambda sc=score: score_var.set(sc))
-
-        # 4. K Cache type
-        self.root.after(0, lambda: label_var.set("Stage 1 — Optimising K cache type..."))
-        for ck in params["cache_k_types"]:
-            if cancel_flag[0]:
-                return None
-            pp, tg = run_one(t=best_threads, b=best_batch, fitt=best_fitt, cache_k=ck)
-            score = calc(pp, tg)
-            if score > 0:
-                if score >= global_best_score:
-                    global_best_score = score
-                    global_best_pp = pp or 0.0
-                    global_best_tg = tg or 0.0
-                best_cache_k = ck
-                self.root.after(0, lambda sc=score: score_var.set(sc))
-
-        # --- STAGE 2: Neighbourhood verification (batch × fitt) ---
-        def neighbours(current, sweep_list):
-            idx = sweep_list.index(current)
-            nb = [current]
-            if idx > 0: nb.append(sweep_list[idx - 1])
-            if idx < len(sweep_list) - 1: nb.append(sweep_list[idx + 1])
-            return list(set(nb))
-
-        b_nb = neighbours(best_batch, params["batch_sizes"])
-        f_nb = neighbours(best_fitt, params["fitt_targets"])
-        grid = list(_it.product(b_nb, f_nb))
-
-        final_best_score = global_best_score
-        final_best_pp = global_best_pp
-        final_best_tg = global_best_tg
-        final_config = {"threads": best_threads, "batch": best_batch,
-                        "fitt": best_fitt, "cache_k": best_cache_k}
-
-        self.root.after(0, lambda: label_var.set("Stage 2 — Neighbourhood verification..."))
-        for b, ft in grid:
-            if cancel_flag[0]:
-                return None
-            if b == best_batch and ft == best_fitt:
-                continue
-            pp, tg = run_one(t=best_threads, b=b, fitt=ft, cache_k=best_cache_k)
-            score = calc(pp, tg)
-            self.root.after(0, lambda sc=score: score_var.set(sc))
-            if score > final_best_score:
-                final_best_score = score
-                final_best_pp = pp or 0.0
-                final_best_tg = tg or 0.0
-                final_config = {"threads": best_threads, "batch": b,
-                                "fitt": ft, "cache_k": best_cache_k}
-
-        # Return via mutable holder
-        return final_config
-
-    def _show_progress_window(self, model_path, bench_exe):
-        """show optimisation progress window, return final config or none"""
+    def _show_progress_window(self, model_path, bench_exe, context_size, metric_weight):
+        """Show optimisation progress window. Returns final_config dict or None."""
         import threading as _threading
+        import time as _time
+        import optimiser_script as _opt
 
         win = Toplevel(self.root)
         win.title("Optimisation in Progress")
-        win.geometry("620x320")
+        win.geometry("620x380")
         win.transient(self.root)
         win.grab_set()
 
-        label_var = tk.StringVar(value="Preparing...")
-        score_var = tk.DoubleVar(value=0.0)
-        remaining_var = tk.StringVar(value="Calculating...")
         cancel_flag = [False]
-        final_config_holder = [None]  # mutable container for result
+        final_config_holder = [None]
 
-        ttk.Label(win, text="Optimisation in Progress", font=("Segoe UI", 12, "bold")).pack(pady=8)
+        ttk.Label(win, text="Optimisation in Progress", font=("Segoe UI", 12, "bold")).pack(pady=(10, 4))
+
+        label_var     = tk.StringVar(value="Preparing...")
+        remaining_var = tk.StringVar(value="Calculating...")
         ttk.Label(win, textvariable=label_var).pack()
-        ttk.Label(win, textvariable=remaining_var).pack()
+        ttk.Label(win, textvariable=remaining_var, foreground="gray").pack()
 
-        progress_var = tk.IntVar(value=0)
+        progress_var = tk.DoubleVar(value=0.0)
         bar = ttk.Progressbar(win, variable=progress_var, maximum=100, mode="determinate")
-        bar.pack(fill="x", padx=20, pady=8)
+        bar.pack(fill="x", padx=20, pady=6)
 
-        def _update_bar():
-            try:
-                val = float(bar.cget("value"))
-            except Exception:
-                return
-            if val < 99.5:
-                win.after(500, _update_bar)
+        # Score display — baseline / last / best
+        scores_frame = ttk.Frame(win)
+        scores_frame.pack(pady=4)
 
-        ttk.Label(win, text="Score so far:", font=("Segoe UI", 9)).pack()
-        score_label = tk.Label(win, textvariable=score_var,
-                               font=("Consolas", 11, "bold"), fg="#27ae60")
-        score_label.pack(pady=4)
+        baseline_var = tk.StringVar(value="--")
+        last_var     = tk.StringVar(value="--")
+        best_var     = tk.StringVar(value="--")
+
+        for col, (lbl, var) in enumerate([
+            ("Baseline", baseline_var),
+            ("Last", last_var),
+            ("Best", best_var),
+        ]):
+            f = ttk.Frame(scores_frame)
+            f.grid(row=0, column=col, padx=20)
+            ttk.Label(f, text=lbl, font=("Segoe UI", 8)).pack()
+            tk.Label(f, textvariable=var, font=("Consolas", 12, "bold"), fg="#27ae60").pack()
 
         def _on_cancel():
             cancel_flag[0] = True
+            # Kill the running llama-bench process immediately
+            try:
+                import optimiser_script as _opt
+                if _opt._current_proc and _opt._current_proc.poll() is None:
+                    _opt._current_proc.kill()
+            except Exception:
+                pass
             win.destroy()
 
         ttk.Button(win, text="Cancel", command=_on_cancel).pack(pady=8)
 
+        start_time = [_time.time()]
+
+        def _progress_callback(run_idx, total_runs, step_name, last_score, best_score, base_score):
+            pct = max(0.0, min(run_idx / total_runs * 100, 99.9))
+            elapsed = _time.time() - start_time[0]
+            avg = elapsed / run_idx if run_idx > 0 else 0
+            remaining = int(avg * (total_runs - run_idx))
+
+            self.root.after(0, lambda p=pct: progress_var.set(p))
+            self.root.after(0, lambda s=step_name: label_var.set(s))
+            self.root.after(0, lambda r=remaining: remaining_var.set(f"~{r}s remaining"))
+            self.root.after(0, lambda s=f"{base_score:.2f}": baseline_var.set(s))
+            self.root.after(0, lambda s=f"{last_score:.2f}": last_var.set(s))
+            self.root.after(0, lambda s=f"{best_score:.2f}": best_var.set(s))
+
         def _run_thread():
-            result = self._run_optimisation(
-                bench_exe, model_path,
-                progress_var, label_var, score_var, remaining_var, cancel_flag)
+            result = _opt.run_full_optimisation(
+                model_path=model_path,
+                bench_exe=bench_exe,
+                context_size=context_size,
+                metric_weight=metric_weight,
+                progress_callback=_progress_callback,
+                cancel_flag=cancel_flag,
+            )
             final_config_holder[0] = result
-            win.destroy()
+            if not cancel_flag[0]:
+                self.root.after(0, win.destroy)
 
         _threading.Thread(target=_run_thread, daemon=True).start()
         win.wait_window()
         return final_config_holder[0]
 
-        # Collect results from the JSON file (sweep thread writes it)
-        try:
-            import json as _json
-            with open("optimiser_results.json", "r") as f:
-                return _json.load(f)
-        except Exception:
-            return []
-
     def _show_results_window(self, final_config):
         """show optimisation results, best config and recommended flags"""
         win = Toplevel(self.root)
         win.title("Optimisation Results")
-        win.geometry("580x420")
+        win.geometry("580x440")
         win.transient(self.root)
 
         ttk.Label(win, text="Optimisation Complete", font=("Segoe UI", 13, "bold")).pack(pady=6)
 
-        # Result display
-        text_area = tk.Text(win, width=60, height=14, font=("Consolas", 9), wrap="word")
+        text_area = tk.Text(win, width=60, height=16, font=("Consolas", 9), wrap="word")
         text_area.pack(fill="both", expand=True, padx=10, pady=4)
 
+        ctx = final_config.get("context_size", 16384)
+        baseline = final_config.get("baseline_score", 0.0)
+        best     = final_config.get("best_score", 0.0)
+        best_pp  = final_config.get("best_pp", 0.0)
+        best_tg  = final_config.get("best_tg", 0.0)
+        pct_gain = ((best - baseline) / baseline * 100) if baseline > 0 else 0.0
+
         lines = [
-            f"Threads:     {final_config['threads']}",
-            f"Batch Size:  {final_config['batch']}",
-            f"FITT Target: {final_config['fitt']}",
-            f"Cache K:     {final_config['cache_k']}",
-            "",
+            f"Threads:          {final_config['threads']}",
+            f"Batch Size:       {final_config['batch']}",
+            f"FITT Target:      {final_config['fitt']}",
+            f"Cache K:          {final_config['cache_k']}",
+            f"",
+            f"Baseline Score:   {baseline:.2f}",
+            f"Best Score:       {best:.2f}",
+            f"Best PP Speed:    {best_pp:.2f} t/s",
+            f"Best TG Speed:    {best_tg:.2f} t/s",
+            f"Improvement:      {pct_gain:.2f}%",
+            f"",
             "Recommended flags for llama-server:",
             f"-t {final_config['threads']} -b {final_config['batch']} -ub {final_config['batch']} "
-            f"-ctx 16384 -fitt {final_config['fitt']} -ctk {final_config['cache_k']}",
+            f"-fitt {final_config['fitt']} -ctk {final_config['cache_k']}",
         ]
         text_area.insert("1.0", "\n".join(lines))
         text_area.configure(state="disabled")
@@ -1906,11 +1761,17 @@ class LlamaServerGUI:
             return
 
         model_path = prereq_result["model_path"]
-        bench_exe = prereq_result["bench_exe"]
+        bench_exe  = prereq_result["bench_exe"]
+
+        # Config dialog — ask for weight and context size
+        cfg = self._show_optimiser_config_dialog()
+        if cfg is None:
+            return
+        metric_weight, context_size = cfg
 
         # Run optimiser
         try:
-            final_config = self._show_progress_window(model_path, bench_exe)
+            final_config = self._show_progress_window(model_path, bench_exe, context_size, metric_weight)
         except Exception as e:
             messagebox.showerror("Error", f"Optimisation failed:\n{e}")
             return
@@ -1918,6 +1779,9 @@ class LlamaServerGUI:
         if not final_config:
             messagebox.showinfo("Results", "No valid results collected.")
             return
+
+        # Pass context_size into config for display in results
+        final_config["context_size"] = context_size
         self._show_results_window(final_config)
 
 

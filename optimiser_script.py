@@ -3,203 +3,64 @@ import itertools
 import re
 import os
 
+CACHE_V_TYPE = "f16"  # V cache always f16 (llama-bench limitation on Vulkan)
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+
+
 # ==========================================
-# CONFIGURATION
+# PURE UTILITY FUNCTIONS (importable)
 # ==========================================
-MODEL_PATH = r"H:\AI\HauhauCS\Gemma-4-E2B-Uncensored-HauhauCS-Aggressive\Gemma-4-E2B-Uncensored-HauhauCS-Aggressive-Q8_K_P.gguf"
-LLAMA_BENCH_PATH = "llama-bench.exe" 
 
-# Context Size
-CONTEXT_SIZE = 16384
-# Dynamic dual-metric focus score weight (0.0 to 1.0)
-# 0.5 = Balanced equally | 0.2 = Focus on Chat Text Gen | 0.8 = Focus on Prompt Load
-METRIC_WEIGHT = 0.5
+def build_thread_list():
+    """Build thread sweep list based on detected CPU count. Returns dict of sweep params.
+    If CPU count cannot be detected, threads list is empty and thread sweep is skipped."""
+    max_threads = os.cpu_count()
+    if max_threads is not None:
+        cap_limit = max(1, int(max_threads * 0.75))
+        step_size = max(1, int(max_threads * 0.25))
+        threads_list = [t for t in range(step_size, cap_limit + 1, step_size)]
+        if cap_limit not in threads_list:
+            threads_list.append(cap_limit)
+    else:
+        # Could not detect CPU count — skip thread sweep entirely
+        threads_list = []
+        cap_limit = 0
+    return {
+        "threads": threads_list,
+        "batch_sizes": [512, 1024, 2048],
+        "fitt_targets": [1024, 512, 256],
+        "cache_k_types": ["f16", "q8_0", "q4_0"],
+        "max_threads": max_threads,
+        "cap_limit": cap_limit,
+    }
 
-# Automatically detect system logical threads (Hyperthreads/SMT included)
-MAX_SYSTEM_THREADS = os.cpu_count() or 4
-
-# Cap the maximum allowed threads at 75% of system capacity
-THREAD_CAP_LIMIT = max(1, int(MAX_SYSTEM_THREADS * 0.75))
-
-# Calculate step size as 25% of total system threads (minimum step size of 1)
-STEP_SIZE = max(1, int(MAX_SYSTEM_THREADS * 0.25))
-
-# Generate thread counts at 25% intervals up to the 75% cap limit
-THREADS_LIST = [t for t in range(STEP_SIZE, THREAD_CAP_LIMIT + 1, STEP_SIZE)]
-
-# Ensure the exact 75% cap limit boundary is explicitly included in the test pool
-if THREAD_CAP_LIMIT not in THREADS_LIST:
-    THREADS_LIST.append(THREAD_CAP_LIMIT)
-
-# Other test parameters to sweep sequentially
-BATCH_LIST = [512, 1024, 2048]
-FITT_LIST = [1024, 512, 256]
-CACHE_K_TYPES = ["f16", "q8_0", "q4_0"]  # K cache only — V cache locked to f16 (llama-bench limitation)
-CACHE_V_TYPE = "f16"                       # V cache always f16
-
-# Starting default placeholders for greedy pass sequential tracking
-best_threads = THREADS_LIST[-1]
-best_batch = 512
-best_fitt = FITT_LIST[0]
-best_cache_k = CACHE_K_TYPES[0]
 
 def parse_bench_results(output):
+    """Parse pp512 and tg128 tokens/sec from llama-bench markdown output."""
     results = {}
     for line in output.splitlines():
         if "pp512" in line:
             parts = [p.strip() for p in line.split("|")]
-            tps = parts[-2].split("±")[0].strip()
-            tps = re.sub(r"[^\d.]", "", tps)
-            results["pp512"] = float(tps)
+            tps = re.sub(r"[^\d.]", "", parts[-2].split("±")[0].strip())
+            if tps:
+                results["pp512"] = float(tps)
         elif "tg128" in line:
             parts = [p.strip() for p in line.split("|")]
-            tps = parts[-2].split("±")[0].strip()
-            tps = re.sub(r"[^\d.]", "", tps)
-            results["tg128"] = float(tps)
+            tps = re.sub(r"[^\d.]", "", parts[-2].split("±")[0].strip())
+            if tps:
+                results["tg128"] = float(tps)
     return results
 
-def run_benchmark(t=None, b=None, fitt=None, cache_k=None, is_base=False):
-    # Base command structure
-    cmd = [LLAMA_BENCH_PATH, "-m", MODEL_PATH, "-o", "md", "--no-warmup", "-fitc", str(CONTEXT_SIZE), "-r", "3"]
-    
-    # Only append custom overrides if it's not the naked baseline run
-    if not is_base:
-        cmd.extend([
-            "-t", str(t),
-            "-b", str(b),
-            "-ub", str(b),
-            "-fa", "on",
-            "-fitt", str(fitt),
-            "-fitc", str(CONTEXT_SIZE),
-            "-ctk", str(cache_k),
-            "-ctv", CACHE_V_TYPE,
-        ])
-        
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, errors="ignore")
-        if result.returncode != 0:
-            print(f"  --> [FAIL] llama-bench exited with code {result.returncode}.")
-            return 0.0, 0.0
-        
-        metrics = parse_bench_results(result.stdout)
-        pp_tps = metrics.get("pp512", 0.0)
-        tg_tps = metrics.get("tg128", 0.0)
-        
-        if pp_tps == 0.0 and tg_tps == 0.0:
-            print("  --> [WARNING] No metrics extracted for this configuration.")
-            return 0.0, 0.0
-            
-        return pp_tps, tg_tps
-    except Exception as e:
-        print(f"  --> [ERROR] Unexpected execution failure: {e}")
-        return 0.0, 0.0
 
-def calculate_score(pp, tg):
-    return (pp * METRIC_WEIGHT) + (tg * (1.0 - METRIC_WEIGHT))
+def calculate_score(pp, tg, metric_weight=0.5):
+    """Dual metric weighted score. metric_weight 0=TG only, 1=PP only, 0.5=balanced."""
+    if pp is None or tg is None:
+        return -1.0
+    return (pp * metric_weight) + (tg * (1.0 - metric_weight))
 
-print("============================================================")
-print(f" Detected {MAX_SYSTEM_THREADS} Total Logical CPU Threads.")
-print(f" Capped Sweep Boundary (75%): {THREAD_CAP_LIMIT} threads maximum.")
-print(f" Thread configurations to sweep: {THREADS_LIST}")
-print(f" V Cache locked to: {CACHE_V_TYPE} (llama-bench limitation)")
-print("============================================================")
-print(" INITIAL STAGE: Running Unoptimized System Baseline")
-print("============================================================")
-
-base_pp, base_tg = run_benchmark(is_base=True)
-base_score = calculate_score(base_pp, base_tg)
-
-if base_score > 0:
-    print(f"[BASE RUN] Prompt: {base_pp:.2f} t/s | Text Gen: {base_tg:.2f} t/s | Score: {base_score:.2f}")
-else:
-    print("[BASE RUN FAIL] Could not establish baseline metrics. Exiting script.")
-    exit(1)
-
-print("\n============================================================")
-print(f" STAGE 1: Fast Sequential Greedy Screening (Weight: {METRIC_WEIGHT})")
-print("============================================================")
-
-# Global best tracks the single highest score seen across all Stage 1 steps
-global_best_score = -1.0
-global_best_pp = 0.0
-global_best_tg = 0.0
-
-# 1. Optimize Threads
-print(f"\n--- Step 1.1: Optimizing Threads (Testing: {THREADS_LIST}) ---")
-stage1_score = -1.0
-for t in THREADS_LIST:
-    print(f"Testing: Threads={t} (Batch={best_batch}, FITT={best_fitt}, CacheK={best_cache_k})")
-    pp, tg = run_benchmark(t, best_batch, best_fitt, best_cache_k)
-    if pp == 0.0 and tg == 0.0: continue
-    score = calculate_score(pp, tg)
-    print(f"  --> [SUCCESS] Prompt: {pp:.2f} t/s | Text: {tg:.2f} t/s | Score: {score:.2f}")
-    if score > stage1_score:
-        stage1_score = score
-        best_threads = t
-    if score > global_best_score:
-        global_best_score = score
-        global_best_pp = pp
-        global_best_tg = tg
-
-# 2. Optimize Batch Size
-print(f"\n--- Step 1.2: Optimizing Batch Size (Testing: {BATCH_LIST}) ---")
-stage1_score = -1.0
-for b in BATCH_LIST:
-    print(f"Testing: Batch={b} (Threads={best_threads}, FITT={best_fitt}, CacheK={best_cache_k})")
-    pp, tg = run_benchmark(best_threads, b, best_fitt, best_cache_k)
-    if pp == 0.0 and tg == 0.0: continue
-    score = calculate_score(pp, tg)
-    print(f"  --> [SUCCESS] Prompt: {pp:.2f} t/s | Text: {tg:.2f} t/s | Score: {score:.2f}")
-    if score > stage1_score:
-        stage1_score = score
-        best_batch = b
-    if score > global_best_score:
-        global_best_score = score
-        global_best_pp = pp
-        global_best_tg = tg
-
-# 3. Optimize VRAM Fit Target (FITT)
-print(f"\n--- Step 1.3: Optimizing VRAM Fit Target (Testing: {FITT_LIST}) ---")
-stage1_score = -1.0
-for fitt in FITT_LIST:
-    print(f"Testing: FITT={fitt} (Threads={best_threads}, Batch={best_batch}, CacheK={best_cache_k})")
-    pp, tg = run_benchmark(best_threads, best_batch, fitt, best_cache_k)
-    if pp == 0.0 and tg == 0.0: continue
-    score = calculate_score(pp, tg)
-    print(f"  --> [SUCCESS] Prompt: {pp:.2f} t/s | Text: {tg:.2f} t/s | Score: {score:.2f}")
-    if score > stage1_score:
-        stage1_score = score
-        best_fitt = fitt
-    if score > global_best_score:
-        global_best_score = score
-        global_best_pp = pp
-        global_best_tg = tg
-
-# 4. Optimize K Cache Type only
-print(f"\n--- Step 1.4: Optimizing K Cache / -ctk (Testing: {CACHE_K_TYPES}, -ctv locked to {CACHE_V_TYPE}) ---")
-stage1_score = -1.0
-for cache_k in CACHE_K_TYPES:
-    print(f"Testing: CacheK={cache_k} (Threads={best_threads}, Batch={best_batch}, FITT={best_fitt})")
-    pp, tg = run_benchmark(best_threads, best_batch, best_fitt, cache_k)
-    if pp == 0.0 and tg == 0.0: continue
-    score = calculate_score(pp, tg)
-    print(f"  --> [SUCCESS] Prompt: {pp:.2f} t/s | Text: {tg:.2f} t/s | Score: {score:.2f}")
-    if score > stage1_score:
-        stage1_score = score
-        best_cache_k = cache_k
-    if score > global_best_score:
-        global_best_score = score
-        global_best_pp = pp
-        global_best_tg = tg
-
-print(f"\n>> Stage 1 Complete. Best Params: -t {best_threads} -b {best_batch} -fitt {best_fitt} -ctk {best_cache_k} | Global Best Score: {global_best_score:.2f}")
-
-print("\n============================================================")
-print(" STAGE 2: Targeted Neighborhood Verification")
-print("============================================================")
-print("Testing parameter grids adjacent to Stage 1 winner to bypass parameter interactions...")
 
 def get_neighbors(current, sweep_list):
+    """Return current value plus adjacent values in the sweep list."""
     idx = sweep_list.index(current)
     neighbors = [current]
     if idx > 0:
@@ -208,42 +69,218 @@ def get_neighbors(current, sweep_list):
         neighbors.append(sweep_list[idx + 1])
     return list(set(neighbors))
 
-# Threads and cache locked to Stage 1 best — only batch and fitt are neighbour-verified
-b_neighbors = get_neighbors(best_batch, BATCH_LIST)
-fitt_neighbors = get_neighbors(best_fitt, FITT_LIST)
 
-neighborhood_grid = list(itertools.product(b_neighbors, fitt_neighbors))
+def run_benchmark(model_path, bench_exe, context_size, t=None, b=None,
+                  fitt=None, cache_k=None, is_base=False, proc_holder=None):
+    cmd = [bench_exe, "-m", model_path, "-o", "md", "--no-warmup",
+           "-fitc", str(context_size), "-r", "1"]
+    if not is_base:
+        cmd.extend([
+            "-t", str(t), "-b", str(b), "-ub", str(b),
+            "-fa", "on", "-fitt", str(fitt),
+            "-ctk", str(cache_k), "-ctv", CACHE_V_TYPE,
+        ])
+    try:
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, errors="ignore", creationflags=_NO_WINDOW
+        )
+        if proc_holder is not None:
+            proc_holder[0] = proc
+        stdout, _ = proc.communicate()
+        if proc.returncode != 0:
+            return 0.0, 0.0
+        metrics = parse_bench_results(stdout)
+        pp = metrics.get("pp512", 0.0)
+        tg = metrics.get("tg128", 0.0)
+        return (pp, tg) if pp or tg else (0.0, 0.0)
+    except Exception:
+        return 0.0, 0.0
 
-final_best_score = global_best_score
-final_best_pp = global_best_pp
-final_best_tg = global_best_tg
-final_config = {"threads": best_threads, "batch": best_batch, "fitt": best_fitt, "cache_k": best_cache_k}
 
-for b, fitt in neighborhood_grid:
-    if b == best_batch and fitt == best_fitt:
-        continue
-        
-    print(f"Verifying Interaction: Batch={b}, FITT={fitt} (Threads={best_threads}, CacheK={best_cache_k})")
-    pp, tg = run_benchmark(best_threads, b, fitt, best_cache_k)
-    if pp == 0.0 and tg == 0.0: continue
-    score = calculate_score(pp, tg)
-    print(f"  --> [SUCCESS] Prompt: {pp:.2f} t/s | Text: {tg:.2f} t/s | Score: {score:.2f}")
-    
-    if score > final_best_score:
-        final_best_score = score
-        final_best_pp = pp
-        final_best_tg = tg
-        final_config = {"threads": best_threads, "batch": b, "fitt": fitt, "cache_k": best_cache_k}
+def run_full_optimisation(model_path, bench_exe, context_size=16384, metric_weight=0.5,
+                          progress_callback=None, cancel_flag=None):
+    """
+    Run full two-stage sequential greedy + neighbourhood optimisation.
 
-print("\n============================================================")
-print(" Optimization Complete!")
-print("============================================================")
-if final_best_score > 0.0:
-    print("Absolute Best Balanced Configuration Found:")
-    print(f"  Text Generation Speed: {final_best_tg:.2f} tokens/sec")
-    print(f"  Prompt Processing Speed: {final_best_pp:.2f} tokens/sec")
-    print("  Recommended Optimization Flags for llama-server:")
-    print(f"    -t {final_config['threads']} -b {final_config['batch']} -ub {final_config['batch']} -ctx {CONTEXT_SIZE} -fitt {final_config['fitt']} -ctk {final_config['cache_k']} -ctv {CACHE_V_TYPE}")
-    
-    percentage_gain = ((final_best_score - base_score) / base_score) * 100.0
-    print(f"\nPerformance Improvement Over Baseline: {percentage_gain:.2f}% (Results may vary by nature of variance)")
+    progress_callback(run_idx, total_runs, step_name, last_score, best_score, baseline_score)
+    cancel_flag: mutable list [False] — set to [True] to abort mid-sweep.
+
+    Returns final_config dict or None if cancelled/failed.
+    """
+    if cancel_flag is None:
+        cancel_flag = [False]
+
+    params = build_thread_list()
+    threads_list  = params["threads"]
+    batch_list    = params["batch_sizes"]
+    fitt_list     = params["fitt_targets"]
+    cache_k_types = params["cache_k_types"]
+
+    # Estimate total runs: stage1 steps + ~neighbourhood grid
+    stage1_total = len(threads_list) + len(batch_list) + len(fitt_list) + len(cache_k_types)
+    neighbourhood_estimate = 6
+    total_runs = stage1_total + neighbourhood_estimate
+    run_idx = [0]
+
+    def _cb(step_name, last_score, best_score, baseline_score):
+        run_idx[0] += 1
+        if progress_callback:
+            progress_callback(run_idx[0], total_runs, step_name, last_score, best_score, baseline_score)
+
+    proc_holder = [None]  # Holder for the current benchmark process, to allow cancellation
+
+    def bench(t, b, fitt, ck, step_name, best_score, baseline_score):
+        pp, tg = run_benchmark(model_path, bench_exe, context_size, t=t, b=b, fitt=fitt, cache_k=ck, proc_holder=proc_holder)
+        score = calculate_score(pp, tg, metric_weight)
+        _cb(step_name, score, max(score, best_score), baseline_score)
+        return pp, tg, score
+
+    # ---- Baseline ----
+    base_pp, base_tg = run_benchmark(model_path, bench_exe, context_size, is_base=True)
+    baseline_score = calculate_score(base_pp, base_tg, metric_weight)
+    if baseline_score <= 0:
+        return None
+
+    # ---- Stage 1 init ----
+    best_threads = threads_list[-1]
+    best_batch   = batch_list[0]
+    best_fitt    = fitt_list[0]
+    best_cache_k = cache_k_types[0]
+    global_best  = baseline_score
+    global_best_pp = base_pp
+    global_best_tg = base_tg
+
+    # Step 1.1 — Threads
+    stage1_step_best = -1.0
+    for t in threads_list:
+        if cancel_flag[0]: return None
+        pp, tg, score = bench(t, best_batch, best_fitt, best_cache_k,
+                              f"Threads={t}", global_best, baseline_score)
+        if score > stage1_step_best:
+            stage1_step_best = score
+            best_threads = t
+        if score > global_best:
+            global_best = score
+            global_best_pp, global_best_tg = pp, tg
+
+    # Step 1.2 — Batch size
+    stage1_step_best = -1.0
+    prev_score = -1.0
+    drops = 0
+    for b in batch_list:
+        if cancel_flag[0]: return None
+        pp, tg, score = bench(best_threads, b, best_fitt, best_cache_k,
+                              f"Batch={b}", global_best, baseline_score)
+        if score > stage1_step_best:
+            stage1_step_best = score
+            best_batch = b
+            drops = 0
+        else:
+            drops += 1
+            if drops >= 2:
+                break
+        if score > global_best:
+            global_best = score
+            global_best_pp, global_best_tg = pp, tg
+        prev_score = score
+
+    # Step 1.3 — FITT target
+    stage1_step_best = -1.0
+    for fitt in fitt_list:
+        if cancel_flag[0]: return None
+        pp, tg, score = bench(best_threads, best_batch, fitt, best_cache_k,
+                              f"FITT={fitt}", global_best, baseline_score)
+        if score > stage1_step_best:
+            stage1_step_best = score
+            best_fitt = fitt
+        if score > global_best:
+            global_best = score
+            global_best_pp, global_best_tg = pp, tg
+
+    # Step 1.4 — K Cache type
+    stage1_step_best = -1.0
+    for ck in cache_k_types:
+        if cancel_flag[0]: return None
+        pp, tg, score = bench(best_threads, best_batch, best_fitt, ck,
+                              f"CacheK={ck}", global_best, baseline_score)
+        if score > stage1_step_best:
+            stage1_step_best = score
+            best_cache_k = ck
+        if score > global_best:
+            global_best = score
+            global_best_pp, global_best_tg = pp, tg
+
+    # ---- Stage 2 — Neighbourhood verification ----
+    b_neighbors    = get_neighbors(best_batch, batch_list)
+    fitt_neighbors = get_neighbors(best_fitt, fitt_list)
+    grid = list(itertools.product(b_neighbors, fitt_neighbors))
+
+    final_best_score = global_best
+    final_config = {"threads": best_threads, "batch": best_batch,
+                    "fitt": best_fitt, "cache_k": best_cache_k,
+                    "baseline_score": baseline_score,
+                    "best_score": global_best,
+                    "best_pp": global_best_pp,
+                    "best_tg": global_best_tg}
+
+    for b, fitt in grid:
+        if b == best_batch and fitt == best_fitt:
+            continue
+        if cancel_flag[0]: return None
+        pp, tg, score = bench(best_threads, b, fitt, best_cache_k,
+                              f"Verify B={b} FITT={fitt}", final_best_score, baseline_score)
+        if score > final_best_score:
+            final_best_score = score
+            final_config = {"threads": best_threads, "batch": b,
+                            "fitt": fitt, "cache_k": best_cache_k,
+                            "baseline_score": baseline_score,
+                            "best_score": score,
+                            "best_pp": pp,
+                            "best_tg": tg}
+
+    return final_config
+
+
+# ==========================================
+# STANDALONE ENTRY POINT
+# ==========================================
+if __name__ == "__main__":
+    MODEL_PATH     = r"H:\AI\unsloth\gemma-4-E4B-it-qat-GGUF\gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf"
+    LLAMA_BENCH_PATH = "llama-bench.exe"
+    CONTEXT_SIZE   = 16384
+    METRIC_WEIGHT  = 0.5
+
+    params = build_thread_list()
+    print("============================================================")
+    print(f" Detected {params['max_threads']} Total Logical CPU Threads.")
+    print(f" Capped Sweep Boundary (75%): {params['cap_limit']} threads maximum.")
+    print(f" Thread configurations to sweep: {params['threads']}")
+    print(f" V Cache locked to: {CACHE_V_TYPE} (llama-bench limitation)")
+    print("============================================================")
+
+    def _print_progress(run_idx, total, step_name, last_score, best_score, baseline_score):
+        print(f"  [{run_idx}/{total}] {step_name} | Last: {last_score:.2f} | Best: {best_score:.2f} | Baseline: {baseline_score:.2f}")
+
+    result = run_full_optimisation(
+        model_path=MODEL_PATH,
+        bench_exe=LLAMA_BENCH_PATH,
+        context_size=CONTEXT_SIZE,
+        metric_weight=METRIC_WEIGHT,
+        progress_callback=_print_progress
+    )
+
+    if result:
+        print("\n============================================================")
+        print(" Optimization Complete!")
+        print("============================================================")
+        print(f"  Text Gen Speed:    {result['best_tg']:.2f} t/s")
+        print(f"  Prompt Speed:      {result['best_pp']:.2f} t/s")
+        print(f"  Best Score:        {result['best_score']:.2f}")
+        print(f"  Baseline Score:    {result['baseline_score']:.2f}")
+        pct = ((result['best_score'] - result['baseline_score']) / result['baseline_score']) * 100
+        print(f"  Improvement:       {pct:.2f}%")
+        print(f"\n  Flags: -t {result['threads']} -b {result['batch']} -ub {result['batch']} "
+              f"-ctx {CONTEXT_SIZE} -fitt {result['fitt']} -ctk {result['cache_k']} -ctv {CACHE_V_TYPE}")
+    else:
+        print("[FAIL] Optimisation did not complete.")
