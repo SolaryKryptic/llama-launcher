@@ -8,7 +8,7 @@ from tkinter import ttk
 from hardwarescanner import scan_hardware
 import sys as _sys2
 
-_CONFIG_PATH = os.path.join(os.getcwd(), "llama_gui_data.json")
+_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "llama_gui_data.json")
 """load config from disk"""
 def _load_config():
     try:

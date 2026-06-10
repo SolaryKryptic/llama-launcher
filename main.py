@@ -18,7 +18,7 @@ root.title(f"llama-launcher - v{updater.CURRENT_VERSION}")
 # Restore saved window geometry or default to centered
 try:
     import json as _json, os as _os
-    _cfg_path = _os.path.join(_os.getcwd(), "llama_gui_data.json")
+    _cfg_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "llama_gui_data.json")
     with open(_cfg_path, "r", encoding="utf-8") as _f:
         _saved = _json.load(_f)
     geom = _saved.get("window_geometry", "764x693")
