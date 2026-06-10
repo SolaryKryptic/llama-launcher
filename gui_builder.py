@@ -8,7 +8,11 @@ from tkinter import ttk
 from hardwarescanner import scan_hardware
 import sys as _sys2
 
-_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "llama_gui_data.json")
+import sys
+if getattr(sys, 'frozen', False):
+    _CONFIG_PATH = os.path.join(os.path.dirname(sys.executable), "llama_gui_data.json")
+else:
+    _CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "llama_gui_data.json")
 """load config from disk"""
 def _load_config():
     try:
@@ -1245,7 +1249,7 @@ class LlamaServerGUI:
         # --- Optimise button (row 6, left) ---
         opt_btn_frame = ttk.Frame(frame)
         opt_btn_frame.grid(row=6, column=0, sticky="w", pady=(8, 0))
-        ttk.Button(opt_btn_frame, text="Optimise (WIP)", command=self._run_optimiser).pack(side="left")
+        ttk.Button(opt_btn_frame, text="Optimise", command=self._run_optimiser).pack(side="left")
 
     def _section_server_settings(self, parent):
         """server settings section, always visible, sensible defaults"""
