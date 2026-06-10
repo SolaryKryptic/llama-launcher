@@ -1525,10 +1525,21 @@ class LlamaServerGUI:
         import tkinter as tk
         result = [None]
 
+        # Load last used values
+        config_data = _load_config()
+        saved_weight = config_data.get("optimiser_weight", 0.5)
+        saved_ctx = config_data.get("optimiser_context_size", 16384)
+
         dlg = Toplevel(self.root)
         dlg.title("Optimiser Settings")
         dlg.geometry("360x200")
         dlg.transient(self.root)
+        dlg.update_idletasks()
+        screen_w = dlg.winfo_screenwidth()
+        screen_h = dlg.winfo_screenheight()
+        x = max(0, (screen_w - 360) // 2)
+        y = max(0, (screen_h - 200) // 2)
+        dlg.geometry(f"360x200+{x}+{y}")
         dlg.grab_set()
         dlg.resizable(False, False)
 
@@ -1538,7 +1549,7 @@ class LlamaServerGUI:
         row1 = ttk.Frame(dlg)
         row1.pack(fill="x", padx=20, pady=4)
         ttk.Label(row1, text="Metric Weight (0=TG focus, 0.5=balanced, 1=PP focus):", width=52).pack(anchor="w")
-        weight_var = tk.DoubleVar(value=0.5)
+        weight_var = tk.DoubleVar(value=saved_weight)
         ttk.Spinbox(row1, from_=0.0, to=1.0, increment=0.05, textvariable=weight_var,
                     width=8, format="%.2f").pack(anchor="w", pady=2)
 
@@ -1546,11 +1557,20 @@ class LlamaServerGUI:
         row2 = ttk.Frame(dlg)
         row2.pack(fill="x", padx=20, pady=4)
         ttk.Label(row2, text="Context Size:").pack(anchor="w")
-        ctx_var = tk.IntVar(value=16384)
+        ctx_var = tk.IntVar(value=saved_ctx)
         ttk.Spinbox(row2, from_=512, to=131072, increment=512, textvariable=ctx_var, width=10).pack(anchor="w", pady=2)
 
         def _ok():
-            result[0] = (weight_var.get(), ctx_var.get())
+            w = weight_var.get()
+            c = ctx_var.get()
+            result[0] = (w, c)
+            try:
+                data = _load_config()
+                data["optimiser_weight"] = w
+                data["optimiser_context_size"] = c
+                _save_config(data)
+            except Exception:
+                pass
             dlg.destroy()
 
         def _cancel():
@@ -1574,6 +1594,12 @@ class LlamaServerGUI:
         win.title("Optimisation in Progress")
         win.geometry("620x380")
         win.transient(self.root)
+        win.update_idletasks()
+        screen_w = win.winfo_screenwidth()
+        screen_h = win.winfo_screenheight()
+        x = max(0, (screen_w - 620) // 2)
+        y = max(0, (screen_h - 380) // 2)
+        win.geometry(f"620x380+{x}+{y}")
         win.grab_set()
 
         cancel_flag = [False]
@@ -1659,6 +1685,12 @@ class LlamaServerGUI:
         win.title("Optimisation Results")
         win.geometry("580x440")
         win.transient(self.root)
+        win.update_idletasks()
+        screen_w = win.winfo_screenwidth()
+        screen_h = win.winfo_screenheight()
+        x = max(0, (screen_w - 580) // 2)
+        y = max(0, (screen_h - 440) // 2)
+        win.geometry(f"580x440+{x}+{y}")
 
         ttk.Label(win, text="Optimisation Complete", font=("Segoe UI", 13, "bold")).pack(pady=6)
 
