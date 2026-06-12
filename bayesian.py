@@ -22,7 +22,7 @@ import optimiser_script as opt
 
 
 def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
-                              metric_weight=0.5, n_trials=20, avg_runs=1,
+                              metric_weight=0.1, n_trials=30, avg_runs=1,
                               progress_callback=None, cancel_flag=None, proc_holder=None,
                               mtp=False, draft_model_path=None):
     """Run an Optuna (TPE) search over the same parameter families used by
@@ -43,7 +43,7 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
     base_pp, base_tg = opt.run_benchmark(
         model_path, server_exe, context_size,
         proc_holder=proc_holder, is_base=True, avg_runs=avg_runs,
-        draft_model_path=draft_model_path
+        draft_model_path=draft_model_path, mtp=is_speculative
     )
     baseline_score = opt.calculate_score(base_pp, base_tg, metric_weight)
     if baseline_score <= 0:
@@ -62,7 +62,7 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
     
     study = optuna.create_study(
         direction="maximize",
-        sampler=optuna.samplers.TPESampler(n_startup_trials=5)
+        sampler=optuna.samplers.TPESampler(n_startup_trials=9)
         )
     
     # Early stopping: track consecutive trials without improvement
@@ -85,8 +85,8 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         else:
             # No improvement
             early_stop_state["no_improve_count"] += 1
-            if early_stop_state["no_improve_count"] >= 10:
-                print(f"[INFO] Early stopping: 10 consecutive trials without improvement.")
+            if early_stop_state["no_improve_count"] >= 15:
+                print(f"[INFO] Early stopping: 15 consecutive trials without improvement.")
                 study.stop()
 
     def objective(trial):

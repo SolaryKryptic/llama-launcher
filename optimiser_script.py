@@ -114,6 +114,10 @@ def build_server_flags(context_size, t=None, tb=None, b=None, ub=None, fitt=None
     if draft_model_path:
         flags += ["--model-draft", draft_model_path]
 
+    # If speculative decoding is active (either MTP or draft model), add spec-type for both baseline and tuned runs
+    if mtp or draft_model_path:
+        flags += ["--spec-type", "draft-mtp"]
+
     if not is_base:
         flags += [
             "-t", str(t),
@@ -127,8 +131,8 @@ def build_server_flags(context_size, t=None, tb=None, b=None, ub=None, fitt=None
         ]
         if tb is not None:
             flags += ["-tb", str(tb)]
-        if (mtp or draft_model_path) and spec_draft_n is not None:
-            flags += ["--spec-type", "draft-mtp", "--spec-draft-n-max", str(spec_draft_n)]
+        if spec_draft_n is not None:
+            flags += ["--spec-draft-n-max", str(spec_draft_n)]
             if spec_draft_p_min is not None:
                 flags += ["--spec-draft-p-min", f"{spec_draft_p_min:.1f}"]
             else:
@@ -210,8 +214,11 @@ def run_completion(port=BENCH_PORT):
     }
     try:
         r = requests.post(url, json=payload, timeout=120)
+        if r.status_code != 200:
+            print(f"[DEBUG] Completion request failed with status code {r.status_code}: {r.text}")
         return r.json()
-    except Exception:
+    except Exception as e:
+        print(f"[DEBUG] Completion request failed: {e}")
         return None
 
 
@@ -262,6 +269,14 @@ def run_benchmark(model_path, server_exe, context_size, proc_holder=None,
             response = run_completion()
             pp, tg = parse_completion_results(response)
             print(f"[DEBUG] Result: pp={pp:.2f} tg={tg:.2f}")
+
+            if pp == 0 and tg == 0:
+                print(f"[DEBUG] Benchmark returned 0 speed. Terminating server to inspect logs...")
+                stop_server(proc)
+                if proc.stderr:
+                    err = proc.stderr.read().decode(errors="ignore")
+                    if err:
+                        print("[SERVER STDERR]\n" + err)
 
             if pp > 0 and tg > 0:
                 pp_total += pp
