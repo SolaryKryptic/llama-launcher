@@ -1516,13 +1516,22 @@ class LlamaServerGUI:
         webbrowser.open("https://huggingface.co/models?library=gguf&sort=trending")
 
     def _validate_prerequisites(self):
-        """check model selected, check bench exe, return dict with ok, model_path, bench_exe"""
+        """check model selected, locate llama-server.exe, return dict with ok, model_path, server_exe"""
         if not self.config.model_path:
             return {"ok": False, "message": "Please select a model before optimising."}
 
-        # Find llama-bench.exe next to llama-server.exe
-        bench_exe = "llama-bench.exe"
-        return {"ok": True, "model_path": self.config.model_path, "bench_exe": bench_exe}
+        import shutil as _shutil, os as _os
+        model_dir = _os.path.dirname(self.config.model_path)
+        candidate = _os.path.join(model_dir, "llama-server.exe")
+        if _os.path.isfile(candidate):
+            server_exe = candidate
+        elif _shutil.which("llama-server.exe"):
+            server_exe = "llama-server.exe"
+        elif _shutil.which("llama-server"):
+            server_exe = "llama-server"
+        else:
+            return {"ok": False, "message": "llama-server.exe not found. Please ensure llama.cpp is on your PATH or in the same folder as your model."}
+        return {"ok": True, "model_path": self.config.model_path, "server_exe": server_exe}
 
     def _show_optimiser_config_dialog(self):
         """Show dialog asking for metric weight and context size. Returns (weight, ctx) or None if cancelled."""
@@ -1588,7 +1597,7 @@ class LlamaServerGUI:
         dlg.wait_window()
         return result[0]
 
-    def _show_progress_window(self, model_path, bench_exe, context_size, metric_weight):
+    def _show_progress_window(self, model_path, server_exe, context_size, metric_weight):
         """Show optimisation progress window. Returns final_config dict or None."""
         import threading as _threading
         import time as _time
@@ -1607,6 +1616,7 @@ class LlamaServerGUI:
         win.grab_set()
 
         cancel_flag = [False]
+        proc_holder = [None]
         final_config_holder = [None]
 
         ttk.Label(win, text="Optimisation in Progress", font=("Segoe UI", 12, "bold")).pack(pady=(10, 4))
@@ -1640,11 +1650,11 @@ class LlamaServerGUI:
 
         def _on_cancel():
             cancel_flag[0] = True
-            # Kill the running llama-bench process immediately
+            # Kill the running llama-server process immediately
             try:
-                import optimiser_script as _opt
-                if _opt._current_proc and _opt._current_proc.poll() is None:
-                    _opt._current_proc.kill()
+                proc = proc_holder[0]
+                if proc is not None and proc.poll() is None:
+                    proc.kill()
             except Exception:
                 pass
             win.destroy()
@@ -1669,11 +1679,12 @@ class LlamaServerGUI:
         def _run_thread():
             result = _opt.run_full_optimisation(
                 model_path=model_path,
-                bench_exe=bench_exe,
+                server_exe=server_exe,
                 context_size=context_size,
                 metric_weight=metric_weight,
                 progress_callback=_progress_callback,
                 cancel_flag=cancel_flag,
+                proc_holder=proc_holder,
             )
             final_config_holder[0] = result
             if not cancel_flag[0]:
@@ -1713,6 +1724,7 @@ class LlamaServerGUI:
             f"Batch Size:       {final_config['batch']}",
             f"FITT Target:      {final_config['fitt']}",
             f"Cache K:          {final_config['cache_k']}",
+            f"Cache V:          {final_config.get('cache_v', 'f16')}",
             f"",
             f"Baseline Score:   {baseline:.2f}",
             f"Best Score:       {best:.2f}",
@@ -1722,7 +1734,7 @@ class LlamaServerGUI:
             f"",
             "Recommended flags for llama-server:",
             f"-t {final_config['threads']} -b {final_config['batch']} -ub {final_config['batch']} "
-            f"-fitt {final_config['fitt']} -ctk {final_config['cache_k']}",
+            f"-fitt {final_config['fitt']} -ctk {final_config['cache_k']} -ctv {final_config.get('cache_v', 'f16')}",
         ]
         text_area.insert("1.0", "\n".join(lines))
         text_area.configure(state="disabled")
@@ -1745,13 +1757,16 @@ class LlamaServerGUI:
             try:
                 self._tk["cache_type_k"].set(final_config["cache_k"])
             except Exception: pass
+            try:
+                self._tk["cache_type_v"].set(final_config.get("cache_v", "f16"))
+            except Exception: pass
             win.destroy()
 
         def _copy():
             import tkinter as tk
             flags = (f"-t {final_config['threads']} -b {final_config['batch']} "
                      f"-ub {final_config['batch']} -ctx 16384 -fitt {final_config['fitt']} "
-                     f"-ctk {final_config['cache_k']}")
+                     f"-ctk {final_config['cache_k']} -ctv {final_config.get('cache_v', 'f16')}")
             self.root.clipboard_clear()
             self.root.clipboard_append(flags)
 
@@ -1797,7 +1812,7 @@ class LlamaServerGUI:
             return
 
         model_path = prereq_result["model_path"]
-        bench_exe  = prereq_result["bench_exe"]
+        server_exe = prereq_result["server_exe"]
 
         # Config dialog — ask for weight and context size
         cfg = self._show_optimiser_config_dialog()
@@ -1807,7 +1822,7 @@ class LlamaServerGUI:
 
         # Run optimiser
         try:
-            final_config = self._show_progress_window(model_path, bench_exe, context_size, metric_weight)
+            final_config = self._show_progress_window(model_path, server_exe, context_size, metric_weight)
         except Exception as e:
             messagebox.showerror("Error", f"Optimisation failed:\n{e}")
             return
