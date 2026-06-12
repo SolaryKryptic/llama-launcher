@@ -585,6 +585,34 @@ class LlamaServerGUI:
             pass
         self.root.destroy()
 
+    def _restore_window_geometry(self, win, config_key, default_width, default_height):
+        """Restore Toplevel geometry from saved config or center default window."""
+        config_data = _load_config()
+        saved_geometry = config_data.get(config_key)
+        if isinstance(saved_geometry, str) and saved_geometry:
+            try:
+                win.geometry(saved_geometry)
+                return
+            except Exception:
+                pass
+
+        win.geometry(f"{default_width}x{default_height}")
+        win.update_idletasks()
+        screen_w = win.winfo_screenwidth()
+        screen_h = win.winfo_screenheight()
+        x = max(0, (screen_w - default_width) // 2)
+        y = max(0, (screen_h - default_height) // 2)
+        win.geometry(f"{default_width}x{default_height}+{x}+{y}")
+
+    def _save_window_geometry(self, config_key, win):
+        """Save current Toplevel geometry to config."""
+        try:
+            data = _load_config()
+            data[config_key] = win.geometry()
+            _save_config(data)
+        except Exception:
+            pass
+
     def _restore_vars(self, saved_flags):
         """set tk variable values to match saved flag state"""
         tk = self._tk
@@ -1545,16 +1573,16 @@ class LlamaServerGUI:
 
         dlg = Toplevel(self.root)
         dlg.title("Optimiser Settings")
-        dlg.geometry("360x200")
         dlg.transient(self.root)
-        dlg.update_idletasks()
-        screen_w = dlg.winfo_screenwidth()
-        screen_h = dlg.winfo_screenheight()
-        x = max(0, (screen_w - 360) // 2)
-        y = max(0, (screen_h - 200) // 2)
-        dlg.geometry(f"360x200+{x}+{y}")
         dlg.grab_set()
         dlg.resizable(False, False)
+        self._restore_window_geometry(dlg, "window_geometry_optimiser_settings", 360, 200)
+
+        def _close_optimiser_settings():
+            self._save_window_geometry("window_geometry_optimiser_settings", dlg)
+            dlg.destroy()
+
+        dlg.protocol("WM_DELETE_WINDOW", _close_optimiser_settings)
 
         ttk.Label(dlg, text="Optimiser Settings", font=("Segoe UI", 11, "bold")).pack(pady=(12, 6))
 
@@ -1584,10 +1612,10 @@ class LlamaServerGUI:
                 _save_config(data)
             except Exception:
                 pass
-            dlg.destroy()
+            _close_optimiser_settings()
 
         def _cancel():
-            dlg.destroy()
+            _close_optimiser_settings()
 
         btn_row = ttk.Frame(dlg)
         btn_row.pack(pady=8)
@@ -1605,15 +1633,19 @@ class LlamaServerGUI:
 
         win = Toplevel(self.root)
         win.title("Optimisation in Progress")
-        win.geometry("620x380")
         win.transient(self.root)
-        win.update_idletasks()
-        screen_w = win.winfo_screenwidth()
-        screen_h = win.winfo_screenheight()
-        x = max(0, (screen_w - 620) // 2)
-        y = max(0, (screen_h - 380) // 2)
-        win.geometry(f"620x380+{x}+{y}")
         win.grab_set()
+        self._restore_window_geometry(win, "window_geometry_optimisation_in_progress", 620, 380)
+
+        def _close_progress_window():
+            if win.winfo_exists():
+                self._save_window_geometry("window_geometry_optimisation_in_progress", win)
+            try:
+                win.destroy()
+            except Exception:
+                pass
+
+        win.protocol("WM_DELETE_WINDOW", _close_progress_window)
 
         cancel_flag = [False]
         proc_holder = [None]
@@ -1657,7 +1689,7 @@ class LlamaServerGUI:
                     proc.kill()
             except Exception:
                 pass
-            win.destroy()
+            _close_progress_window()
 
         ttk.Button(win, text="Cancel", command=_on_cancel).pack(pady=8)
 
@@ -1688,7 +1720,7 @@ class LlamaServerGUI:
             )
             final_config_holder[0] = result
             if not cancel_flag[0]:
-                self.root.after(0, win.destroy)
+                self.root.after(0, _close_progress_window)
 
         _threading.Thread(target=_run_thread, daemon=True).start()
         win.wait_window()
@@ -1698,14 +1730,14 @@ class LlamaServerGUI:
         """show optimisation results, best config and recommended flags"""
         win = Toplevel(self.root)
         win.title("Optimisation Results")
-        win.geometry("580x440")
         win.transient(self.root)
-        win.update_idletasks()
-        screen_w = win.winfo_screenwidth()
-        screen_h = win.winfo_screenheight()
-        x = max(0, (screen_w - 580) // 2)
-        y = max(0, (screen_h - 440) // 2)
-        win.geometry(f"580x440+{x}+{y}")
+        self._restore_window_geometry(win, "window_geometry_optimisation_results", 580, 440)
+
+        def _close_results_window():
+            self._save_window_geometry("window_geometry_optimisation_results", win)
+            win.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", _close_results_window)
 
         ttk.Label(win, text="Optimisation Complete", font=("Segoe UI", 13, "bold")).pack(pady=6)
 
@@ -1760,7 +1792,7 @@ class LlamaServerGUI:
             try:
                 self._tk["cache_type_v"].set(final_config.get("cache_v", "f16"))
             except Exception: pass
-            win.destroy()
+            _close_results_window()
 
         def _copy():
             import tkinter as tk
@@ -1774,7 +1806,7 @@ class LlamaServerGUI:
         btn_frame.pack(fill="x", pady=8)
         ttk.Button(btn_frame, text="Apply Settings", command=_apply).pack(side="right", padx=4)
         ttk.Button(btn_frame, text="Copy Flags", command=_copy).pack(side="right", padx=4)
-        ttk.Button(btn_frame, text="Close", command=win.destroy).pack(side="right")
+        ttk.Button(btn_frame, text="Close", command=_close_results_window).pack(side="right")
 
 
 
@@ -1791,14 +1823,53 @@ class LlamaServerGUI:
         """entry point for optimiser, sequential greedy and neighbourhood"""
         from tkinter import messagebox
 
-        # Warning dialog
+        # Warning dialog (custom Toplevel so geometry persists)
         msg = (
             "Model Optimisation\n\n"
             "Your system will be under high load during this process.\n"
             "Please save your work and close unnecessary applications.\n"
             "Proceed?"
         )
-        if not messagebox.askyesno("Optimise System", msg):
+
+        confirm = {"value": False}
+        dlg = Toplevel(self.root)
+        dlg.title("Optimise System")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        dlg.resizable(False, False)
+        # Restore last geometry or center default
+        self._restore_window_geometry(dlg, "window_geometry_optimise_system", 420, 160)
+
+        def _close_confirm():
+            # Save geometry and close, defaulting to False
+            try:
+                self._save_window_geometry("window_geometry_optimise_system", dlg)
+            except Exception:
+                pass
+            confirm["value"] = False
+            try: dlg.destroy()
+            except Exception: pass
+
+        def _on_yes():
+            try:
+                self._save_window_geometry("window_geometry_optimise_system", dlg)
+            except Exception:
+                pass
+            confirm["value"] = True
+            try: dlg.destroy()
+            except Exception: pass
+
+        def _on_no():
+            _close_confirm()
+
+        ttk.Label(dlg, text=msg, wraplength=380, justify="left").pack(padx=16, pady=12)
+        btn_row = ttk.Frame(dlg)
+        btn_row.pack(pady=8)
+        ttk.Button(btn_row, text="Yes", command=_on_yes).pack(side="left", padx=6)
+        ttk.Button(btn_row, text="No", command=_on_no).pack(side="left", padx=6)
+        dlg.protocol("WM_DELETE_WINDOW", _close_confirm)
+        dlg.wait_window()
+        if not confirm["value"]:
             return
 
         # Validate prerequisites

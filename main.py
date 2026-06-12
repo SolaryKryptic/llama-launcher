@@ -12,7 +12,7 @@ def _no_scroll(event):
     return "break"
 root.bind("<MouseWheel>", _no_scroll)
 
-# UPDATED: Use the dynamic version from updater.py so it matches your GitHub file tags
+# UPDATED: Use the dynamic version from updater.py so it matches GitHub file tags
 root.title(f"llama-launcher - v{updater.CURRENT_VERSION}")
 
 # Restore saved window geometry or default to centered
