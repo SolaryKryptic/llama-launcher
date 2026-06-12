@@ -187,7 +187,7 @@ def parse_completion_results(response):
 
 def run_benchmark(model_path, server_exe, context_size, proc_holder=None,
                   t=None, b=None, fitt=None, cache_k="f16", cache_v="f16",
-                  no_mmap=False, is_base=False, avg_runs=2):
+                  no_mmap=False, is_base=False, avg_runs=1):
     """Start llama-server, run benchmark, stop server. Returns (pp_tps, tg_tps)."""
     pp_total, tg_total, valid = 0.0, 0.0, 0
 
