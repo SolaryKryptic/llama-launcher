@@ -1709,19 +1709,35 @@ class LlamaServerGUI:
             self.root.after(0, lambda s=f"{best_score:.2f}": best_var.set(s))
 
         def _run_thread():
-            result = _opt.run_full_optimisation(
-                model_path=model_path,
-                server_exe=server_exe,
-                context_size=context_size,
-                metric_weight=metric_weight,
-                progress_callback=_progress_callback,
-                cancel_flag=cancel_flag,
-                proc_holder=proc_holder,
-            )
-            final_config_holder[0] = result
-            if not cancel_flag[0]:
-                self.root.after(0, _close_progress_window)
-
+            try:
+                result = _opt.run_full_optimisation(
+                    model_path=model_path,
+                    server_exe=server_exe,
+                    context_size=context_size,
+                    metric_weight=metric_weight,
+                    progress_callback=_progress_callback,
+                    cancel_flag=cancel_flag,
+                    proc_holder=proc_holder,
+                )
+                final_config_holder[0] = result
+            finally:
+                # Ensure the server process is properly stopped after optimization completes
+                try:
+                    proc = proc_holder[0]
+                    if proc is not None and proc.poll() is None:
+                        proc.terminate()
+                        proc.wait(timeout=5)
+                except Exception:
+                    try:
+                        if proc is not None:
+                            proc.kill()
+                    except Exception:
+                        pass
+                finally:
+                    proc_holder[0] = None
+                
+                if not cancel_flag[0]:
+                    self.root.after(0, _close_progress_window)
         _threading.Thread(target=_run_thread, daemon=True).start()
         win.wait_window()
         return final_config_holder[0]
