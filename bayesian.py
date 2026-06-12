@@ -184,12 +184,12 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         "cache_v": best_params["cache_v"],
         "mtp": is_speculative,
         "spec_draft_n": best_params.get("spec_draft_n") if is_speculative else None,
-        "spec_draft_p_min": best_params.get("spec_draft_p_min") if is_speculative else None,
+        "spec_draft_p_min": best_params.get("spec_draft_p_min.2") if is_speculative else None,
         "draft_model_path": draft_model_path,
-        "baseline_score": baseline_score,
-        "best_score": best_score,
-        "best_pp": best_pp,
-        "best_tg": best_tg,
+        "baseline_score": f"{baseline_score:.2f}",
+        "best_score": f"{best_score:.2f}",
+        "best_pp": f"{best_pp:.2f}",
+        "best_tg": f"{best_tg:.2f}",
     }
     return final_config
 
