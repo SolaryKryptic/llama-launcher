@@ -1710,6 +1710,10 @@ class LlamaServerGUI:
 
         def _run_thread():
             try:
+                draft_path = None
+                if self.config.spec_enabled:
+                    draft_path = self.config.draft_model_path.strip() if self.config.draft_model_path else None
+
                 result = _opt.run_full_optimisation(
                     model_path=model_path,
                     server_exe=server_exe,
@@ -1718,6 +1722,7 @@ class LlamaServerGUI:
                     progress_callback=_progress_callback,
                     cancel_flag=cancel_flag,
                     proc_holder=proc_holder,
+                    draft_model_path=draft_path,
                 )
                 final_config_holder[0] = result
             finally:

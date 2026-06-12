@@ -40,25 +40,42 @@ TG_N_PREDICT = 128
 
 def build_thread_list():
     """Build thread sweep list based on detected CPU count.
-    If CPU count cannot be detected, threads list is empty and thread sweep is skipped."""
+    If CPU count cannot be detected, threads list is empty and thread sweep is skipped.
+    
+    Returns:
+        threads: up to 75% of max threads (for -t flag)
+        thread_batch: up to 100% of max threads (for -tb flag, thread batching)
+        micro_batch_sizes: independent from batch sizes
+    """
     max_threads = os.cpu_count()
     if max_threads is not None:
-        cap_limit = max(1, int(max_threads * 0.75))
+        cap_limit_75 = max(1, int(max_threads * 0.75))
+        cap_limit_100 = max_threads
         step_size = max(1, int(max_threads * 0.25))
-        threads_list = [t for t in range(step_size, cap_limit + 1, step_size)]
-        if cap_limit not in threads_list:
-            threads_list.append(cap_limit)
+        threads_list = [t for t in range(step_size, cap_limit_75 + 1, step_size)]
+        if cap_limit_75 not in threads_list:
+            threads_list.append(cap_limit_75)
+        
+        # Thread batch can use up to 100% of threads
+        thread_batch_list = [t for t in range(step_size, cap_limit_100 + 1, step_size)]
+        if cap_limit_100 not in thread_batch_list:
+            thread_batch_list.append(cap_limit_100)
     else:
         threads_list = []
-        cap_limit = 0
+        thread_batch_list = []
+        cap_limit_75 = 0
+        cap_limit_100 = 0
     return {
         "threads": threads_list,
+        "thread_batch": thread_batch_list,
         "batch_sizes": [512, 1024, 2048],
+        "micro_batch_sizes": [256, 512, 1024],
         "fitt_targets": [128],
         "cache_k_types": ["f16", "q8_0", "q5_0", "q4_0"],
         "cache_v_types": ["f16", "q8_0", "q5_0", "q4_0"],
+        "spec_draft_n": list(range(1, 8)),  # 1-7 for MTP speculative decoding
         "max_threads": max_threads,
-        "cap_limit": cap_limit,
+        "cap_limit": cap_limit_75,
     }
 
 
@@ -83,8 +100,9 @@ def port_is_free(port):
         return s.connect_ex(("127.0.0.1", port)) != 0
 
 
-def build_server_flags(context_size, t=None, b=None, fitt=None,
-                       cache_k="f16", cache_v="f16", no_mmap=False, is_base=False):
+def build_server_flags(context_size, t=None, tb=None, b=None, ub=None, fitt=None,
+                       cache_k="f16", cache_v="f16", no_mmap=False, is_base=False,
+                       mtp=False, spec_draft_n=None, draft_model_path=None, spec_draft_p_min=None):
     flags = [
         "-c", str(context_size),
         "--port", str(BENCH_PORT),
@@ -93,17 +111,28 @@ def build_server_flags(context_size, t=None, b=None, fitt=None,
         "-np", "1",
         "--no-warmup",
     ]
+    if draft_model_path:
+        flags += ["--model-draft", draft_model_path]
+
     if not is_base:
         flags += [
             "-t", str(t),
             "-b", str(b),
-            "-ub", str(b),
+            "-ub", str(ub if ub is not None else b),
             "-fa", "on",
             "--fit", "on",
             "-fitt", str(fitt),
             "-ctk", str(cache_k),
             "-ctv", str(cache_v),
         ]
+        if tb is not None:
+            flags += ["-tb", str(tb)]
+        if (mtp or draft_model_path) and spec_draft_n is not None:
+            flags += ["--spec-type", "draft-mtp", "--spec-draft-n-max", str(spec_draft_n)]
+            if spec_draft_p_min is not None:
+                flags += ["--spec-draft-p-min", f"{spec_draft_p_min:.1f}"]
+            else:
+                flags += ["--spec-draft-p-min", "0.4"]
         if no_mmap:
             flags.append("--no-mmap")
     return flags
@@ -117,7 +146,7 @@ def start_server(model_path, server_exe, context_size, proc_holder=None, **confi
         cmd,
         # creationflags=subprocess.CREATE_NEW_CONSOLE,
         stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL, # comment these lines to make terminal visible for debugging
+        stderr=subprocess.PIPE, # Pipe stderr so we can inspect errors when server fails to start
         creationflags=_NO_WINDOW,
     )
     if proc_holder is not None:
@@ -130,6 +159,10 @@ def wait_for_server(port=BENCH_PORT, timeout=120, proc=None):
     print(f"[DEBUG] Waiting for server on port {port}...")
     deadline = time.time() + timeout
     while time.time() < deadline:
+        # Check if the process has terminated prematurely
+        if proc is not None and proc.poll() is not None:
+            print(f"[DEBUG] Server process terminated prematurely with exit code {proc.returncode}.")
+            break
         try:
             r = requests.get(url, timeout=2)
             if r.status_code == 200:
@@ -139,10 +172,18 @@ def wait_for_server(port=BENCH_PORT, timeout=120, proc=None):
             pass
         time.sleep(0.5)
     print(f"[DEBUG] Server timed out after {timeout}s.")
-    if proc is not None and proc.stderr:
-        err = proc.stderr.read().decode(errors="ignore")
-        if err:
-            print("[SERVER STDERR]\n" + err)
+    if proc is not None:
+        # If still running, terminate first so stderr read doesn't block
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except Exception:
+                proc.kill()
+        if proc.stderr:
+            err = proc.stderr.read().decode(errors="ignore")
+            if err:
+                print("[SERVER STDERR]\n" + err)
     return False
 
 
@@ -186,8 +227,9 @@ def parse_completion_results(response):
 
 
 def run_benchmark(model_path, server_exe, context_size, proc_holder=None,
-                  t=None, b=None, fitt=None, cache_k="f16", cache_v="f16",
-                  no_mmap=False, is_base=False, avg_runs=1):
+                  t=None, tb=None, b=None, ub=None, fitt=None, cache_k="f16", cache_v="f16",
+                  no_mmap=False, is_base=False, avg_runs=1, mtp=False, spec_draft_n=None,
+                  draft_model_path=None, spec_draft_p_min=None):
     """Start llama-server, run benchmark, stop server. Returns (pp_tps, tg_tps)."""
     pp_total, tg_total, valid = 0.0, 0.0, 0
 
@@ -204,9 +246,12 @@ def run_benchmark(model_path, server_exe, context_size, proc_holder=None,
         proc = start_server(
             model_path, server_exe, context_size,
             proc_holder=proc_holder,
-            t=t, b=b, fitt=fitt,
+            t=t, tb=tb, b=b, ub=ub, fitt=fitt,
             cache_k=cache_k, cache_v=cache_v,
             no_mmap=no_mmap, is_base=is_base,
+            mtp=mtp, spec_draft_n=spec_draft_n,
+            draft_model_path=draft_model_path,
+            spec_draft_p_min=spec_draft_p_min
         )
 
         try:
@@ -235,7 +280,8 @@ def run_benchmark(model_path, server_exe, context_size, proc_holder=None,
 
 
 def run_full_optimisation(model_path, server_exe, context_size=16384, metric_weight=0.5,
-                          progress_callback=None, cancel_flag=None, proc_holder=None):
+                          progress_callback=None, cancel_flag=None, proc_holder=None,
+                          draft_model_path=None):
     """Run full two-stage sequential greedy + neighbourhood optimisation using llama-server."""
     if cancel_flag is None:
         cancel_flag = [False]
@@ -262,14 +308,15 @@ def run_full_optimisation(model_path, server_exe, context_size=16384, metric_wei
 
         def bench(step_name, best_score, baseline_score, **config):
             pp, tg = run_benchmark(model_path, server_exe, context_size,
-                                   proc_holder=proc_holder, **config)
+                                   proc_holder=proc_holder, draft_model_path=draft_model_path, **config)
             score = calculate_score(pp, tg, metric_weight)
             _cb(step_name, score, max(score, best_score), baseline_score)
             return pp, tg, score
 
         # ---- Baseline ----
         base_pp, base_tg = run_benchmark(model_path, server_exe, context_size,
-                                         proc_holder=proc_holder, is_base=True)
+                                         proc_holder=proc_holder, is_base=True,
+                                         draft_model_path=draft_model_path)
         baseline_score = calculate_score(base_pp, base_tg, metric_weight)
         if baseline_score <= 0:
             return None
