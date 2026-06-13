@@ -1870,9 +1870,6 @@ class LlamaServerGUI:
 
         flash_attention = _safe_bool(final_config.get("flash_attention"), False)
         fit_on = _safe_bool(final_config.get("fit_on"), False)
-        no_mmap = _safe_bool(final_config.get("no_mmap"), self.config.no_mmap) if "no_mmap" in final_config else self.config.no_mmap
-        mlock = _safe_bool(final_config.get("mlock"), self.config.mlock) if "mlock" in final_config else self.config.mlock
-        no_warmup = _safe_bool(final_config.get("no_warmup"), self.config.no_warmup) if "no_warmup" in final_config else self.config.no_warmup
 
         spec_enabled = _safe_bool(final_config.get("spec_enabled"), self.config.spec_enabled) if "spec_enabled" in final_config else bool(final_config.get("mtp") or final_config.get("draft_model_path") or self.config.spec_enabled)
         spec_type = final_config.get("spec_type", "draft-mtp" if spec_enabled else self.config.spec_type)
@@ -1894,12 +1891,6 @@ class LlamaServerGUI:
             extra_flags.append("-fa on")
         if fit_on:
             extra_flags.append("--fit on")
-        if no_mmap:
-            extra_flags.append("--no-mmap")
-        if mlock:
-            extra_flags.append("--mlock")
-        if no_warmup:
-            extra_flags.append("--no-warmup")
         if spec_enabled:
             extra_flags.append(f"--spec-type {spec_type}")
             if spec_draft_n:
@@ -1935,32 +1926,22 @@ class LlamaServerGUI:
             f"Thread Batch:     {thread_batch}",
             f"Batch Size:       {batch}",
             f"Micro-Batch:      {micro_batch}",
-            f"FITT Target:      {fitt}",
+            f"FIT Target:      {fitt}",
             f"Cache K:          {cache_k}",
             f"Cache V:          {cache_v}",
-            f"Flash Attention:  {'Yes' if flash_attention else 'No'}",
-            f"Fit On:           {'Yes' if fit_on else 'No'}",
-            f"No-MMAP:          {'Yes' if no_mmap else 'No'}",
-            f"MLock:            {'Yes' if mlock else 'No'}",
-            f"No Warmup:        {'Yes' if no_warmup else 'No'}",
             f"Speculative:      {'Yes' if spec_enabled else 'No'}",
             f"Spec Type:        {spec_type if spec_enabled else '--'}",
             f"Spec Draft N Max: {spec_draft_n if spec_enabled else '--'}",
-            f"Spec Draft N Min: {spec_draft_n_min if spec_enabled else '--'}",
             f"Spec Draft P Min: {spec_draft_p_min if spec_enabled else '--'}",
             f"Draft Model:      {os.path.basename(draft_model_path) if draft_model_path and spec_enabled else '--'}",
             f"",
-            f"Baseline Score:   {baseline:.2f} (base command)",
+            f"Baseline Score:   {baseline:.2f} (pre-optimisation)",
             f"Baseline PP:      {baseline_pp:.2f} t/s",
             f"Baseline TG:      {baseline_tg:.2f} t/s",
             f"Best Score:       {best:.2f}",
             f"Best PP Speed:    {best_pp:.2f} t/s",
             f"Best TG Speed:    {best_tg:.2f} t/s",
             f"Improvement:      {pct_gain:.2f}%",
-            f"",
-            f"Trial 0:          {baseline:.2f} (base command baseline)",
-            f"Trial 0 PP:       {baseline_pp:.2f} t/s",
-            f"Trial 0 TG:       {baseline_tg:.2f} t/s",
             f"",
             "Recommended flags for llama-server:",
             recommended_flags,
@@ -1989,9 +1970,6 @@ class LlamaServerGUI:
             _set_config_attr("cache_type_v", cache_v)
             _set_config_attr("flash_attention", flash_attention)
             _set_config_attr("fit_on", fit_on)
-            _set_config_attr("no_mmap", no_mmap)
-            _set_config_attr("mlock", mlock)
-            _set_config_attr("no_warmup", no_warmup)
             _set_config_attr("spec_enabled", spec_enabled)
             _set_config_attr("spec_type", spec_type)
             _set_config_attr("spec_draft_n_max", int(spec_draft_n) if spec_draft_n else 0)
@@ -2010,9 +1988,6 @@ class LlamaServerGUI:
             _set_var("cache_type_v", cache_v)
             _set_var("flash_attention", flash_attention)
             _set_var("fit_on", fit_on)
-            _set_var("no_mmap", no_mmap)
-            _set_var("mlock", mlock)
-            _set_var("no_warmup", no_warmup)
             _set_var("spec_enabled", spec_enabled)
             _set_var("spec_ngram", "ngram-mod" in (spec_type or ""))
             _set_var("spec_draft", "draft-mtp" in (spec_type or ""))
