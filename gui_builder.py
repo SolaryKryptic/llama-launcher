@@ -228,7 +228,7 @@ class FlagConfig:
                 setattr(self, key, val)
 
 
-# UI builder — all ttk widget frames returned as methods
+# UI builder —> all ttk widget frames returned as methods
 # Each section method creates a LabelFrame with its widgets and packs it into *parent*
 # Live command generation is triggered by Tk variable traces on every input field
 
@@ -570,7 +570,7 @@ class LlamaServerGUI:
 
 
 # ---------------------------------------------------------------------------
-# Section builders — each returns a ttk.Frame packed into *parent*
+# Section builders, each returns a ttk.Frame packed into *parent*
 # Each section method creates a LabelFrame with its widgets and packs it into *parent*
 # Live command generation is triggered by Tk variable traces on every input field
 # ---------------------------------------------------------------------------
@@ -1134,7 +1134,7 @@ class LlamaServerGUI:
         spec_row.pack(fill="x")
         tk.Checkbutton(spec_row, text="Speculative Decoding", variable=iv_spec_enabled).pack(side="left")
 
-        # Sub-options row (child of spec_frame — same pack master)
+        # Sub-options row (child of spec_frame same pack master)
         spec_sub_row = ttk.Frame(spec_frame)
         tk.Checkbutton(spec_sub_row, text="ngram-mod", variable=iv_spec_ngram).grid(row=0, column=0, sticky="w")
         tk.Checkbutton(spec_sub_row, text="draft-mtp", variable=iv_spec_draft).grid(row=0, column=1, sticky="w", padx=(16, 0))
@@ -1150,7 +1150,7 @@ class LlamaServerGUI:
         ttk.Label(spec_draft_row, text="Min:").pack(side="left")
         ttk.Spinbox(spec_draft_row, from_=0, to=64, textvariable=iv_spec_draft_min, width=4).pack(side="left", padx=(2, 8))
         ttk.Label(spec_draft_row, text="P Min:").pack(side="left")
-        ttk.Spinbox(spec_draft_row, from_=0.0, to=1.0, increment=0.1, textvariable=iv_spec_draft_p_min, width=4, format="%.1f").pack(side="left", padx=(2, 0))
+        ttk.Spinbox(spec_draft_row, from_=0.0, to=0.7, increment=0.1, textvariable=iv_spec_draft_p_min, width=4, format="%.1f").pack(side="left", padx=(2, 0))
 
         def _update_spec_type():
             """build spec_type string from both checkboxes"""
@@ -1201,7 +1201,7 @@ class LlamaServerGUI:
                 self.config.spec_draft_n_min = max(0, iv_spec_draft_min.get())
                 raw_p_min = iv_spec_draft_p_min.get()
                 p_min = float(raw_p_min) if raw_p_min else 0.0
-                self.config.spec_draft_p_min = max(0.0, min(p_min, 1.0))
+                self.config.spec_draft_p_min = max(0.0, min(p_min, 0.7))
                 iv_spec_draft_p_min.set(self.config.spec_draft_p_min)
                 self._update_command()
             except (ValueError, TypeError, tk.TclError):
@@ -1518,7 +1518,7 @@ class LlamaServerGUI:
 
 
 # ---------------------------------------------------------------------------
-# Event handlers & helpers — user interactions and command generation logic
+# Event handlers & helpers, user interactions and command generation logic
 # Each section method creates a LabelFrame with its widgets and packs it into *parent*
 # Live command generation is triggered by Tk variable traces on every input field
 # ---------------------------------------------------------------------------
@@ -1645,7 +1645,7 @@ class LlamaServerGUI:
         ttk.Combobox(row_method, textvariable=method_var, values=AVAILABLE_METHODS, state="readonly", width=22).pack(anchor="w", pady=2)
 
         weight_var = tk.DoubleVar(value=saved_weight)
-        _spin_row("Score Weight (Number closer to 0 puts more weight on TG, closer to 1 puts more weight on PP)\nRecommend setting weighting to low end (0.2-0.4) due to PP usually being orders of magnitude higher\nthan TG:", weight_var, 0.0, 1.0, 0.05, fmt="%.2f")
+        _spin_row("Score Weight: (Value closer to 0 puts more weight on TG, closer to 1 puts more weight on PP)\nRecommend setting weighting to lower end (0.2-0.4) by default due to PP \nusually being x times higher than TG:", weight_var, 0.0, 1.0, 0.05, fmt="%.2f")
 
         ctx_var = tk.IntVar(value=saved_ctx)
         _spin_row("Context Size:", ctx_var, 512, 131072, 512, width=10)
@@ -1733,7 +1733,7 @@ class LlamaServerGUI:
         bar = ttk.Progressbar(win, variable=progress_var, maximum=100, mode="determinate")
         bar.pack(fill="x", padx=20, pady=6)
 
-        # Score display — baseline / last / best
+        # Score display —> baseline / last / best
         scores_frame = ttk.Frame(win)
         scores_frame.pack(pady=4)
 
@@ -1926,7 +1926,6 @@ class LlamaServerGUI:
             f"Thread Batch:     {thread_batch}",
             f"Batch Size:       {batch}",
             f"Micro-Batch:      {micro_batch}",
-            f"FIT Target:      {fitt}",
             f"Cache K:          {cache_k}",
             f"Cache V:          {cache_v}",
             f"Speculative:      {'Yes' if spec_enabled else 'No'}",
@@ -2088,7 +2087,7 @@ class LlamaServerGUI:
         model_path = prereq_result["model_path"]
         server_exe = prereq_result["server_exe"]
 
-        # Config dialog — ask for weight and context size
+        # Config dialog ask for weight and context size
         cfg = self._show_optimiser_config_dialog()
         if cfg is None:
             return

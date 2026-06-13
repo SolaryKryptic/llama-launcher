@@ -169,7 +169,7 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         ck = trial.suggest_categorical("cache_k", cache_k_choices)
         cv = trial.suggest_categorical("cache_v", cache_v_choices)
         sdn = trial.suggest_categorical("spec_draft_n", spec_draft_n_choices) if is_speculative else None
-        sdp = trial.suggest_float("spec_draft_p_min", 0.1, 0.9, step=0.1) if is_speculative else None
+        sdp = trial.suggest_float("spec_draft_p_min", 0.0, 0.7, step=0.1) if is_speculative else None
 
         # trial_role: compare effective params (using tb, not tb_candidate) against baseline
         effective_params = {
