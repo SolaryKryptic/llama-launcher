@@ -6,6 +6,7 @@ from tkinter import filedialog, messagebox, Tk, Toplevel, StringVar
 import tkinter as tk
 from tkinter import ttk
 from hardwarescanner import scan_hardware
+from optimisation_service import AVAILABLE_METHODS, METHOD_BAYESIAN, OptimisationRequest, OptimisationService
 import sys as _sys2
 
 import sys
@@ -1562,21 +1563,27 @@ class LlamaServerGUI:
         return {"ok": True, "model_path": self.config.model_path, "server_exe": server_exe}
 
     def _show_optimiser_config_dialog(self):
-        """Show dialog asking for metric weight and context size. Returns (weight, ctx) or None if cancelled."""
+        """Show optimiser settings. Returns dict or None if cancelled."""
         import tkinter as tk
         result = [None]
 
-        # Load last used values
         config_data = _load_config()
+        saved_method = config_data.get("optimiser_method", METHOD_BAYESIAN)
+        if saved_method not in AVAILABLE_METHODS:
+            saved_method = METHOD_BAYESIAN
         saved_weight = config_data.get("optimiser_weight", 0.5)
         saved_ctx = config_data.get("optimiser_context_size", 16384)
+        saved_trials = config_data.get("optimiser_trials", 40)
+        saved_avg = config_data.get("optimiser_avg_runs", 1)
+        saved_seed = config_data.get("optimiser_seed", 42)
 
         dlg = Toplevel(self.root)
         dlg.title("Optimiser Settings")
         dlg.transient(self.root)
         dlg.grab_set()
         dlg.resizable(False, False)
-        self._restore_window_geometry(dlg, "window_geometry_optimiser_settings", 360, 200)
+        self._restore_window_geometry(dlg, "window_geometry_optimiser_settings", 650, 320)
+        dlg.minsize(650, 320)
 
         def _close_optimiser_settings():
             self._save_window_geometry("window_geometry_optimiser_settings", dlg)
@@ -1586,29 +1593,55 @@ class LlamaServerGUI:
 
         ttk.Label(dlg, text="Optimiser Settings", font=("Segoe UI", 11, "bold")).pack(pady=(12, 6))
 
-        # Metric weight
-        row1 = ttk.Frame(dlg)
-        row1.pack(fill="x", padx=20, pady=4)
-        ttk.Label(row1, text="Metric Weight (0=TG focus, 0.5=balanced, 1=PP focus):", width=52).pack(anchor="w")
-        weight_var = tk.DoubleVar(value=saved_weight)
-        ttk.Spinbox(row1, from_=0.0, to=1.0, increment=0.05, textvariable=weight_var,
-                    width=8, format="%.2f").pack(anchor="w", pady=2)
+        def _spin_row(label, var, from_, to, increment, width=8, fmt=None):
+            row = ttk.Frame(dlg)
+            row.pack(fill="x", padx=20, pady=3)
+            ttk.Label(row, text=label).pack(anchor="w", side="left")
+            kwargs = {"from_": from_, "to": to, "increment": increment, "textvariable": var, "width": width}
+            if fmt is not None:
+                kwargs["format"] = fmt
+            ttk.Spinbox(row, **kwargs).pack(anchor="w", pady=2)
 
-        # Context size
-        row2 = ttk.Frame(dlg)
-        row2.pack(fill="x", padx=20, pady=4)
-        ttk.Label(row2, text="Context Size:").pack(anchor="w")
+        method_var = tk.StringVar(value=saved_method)
+        row_method = ttk.Frame(dlg)
+        row_method.pack(fill="x", padx=20, pady=4)
+        ttk.Label(row_method, text="Method:", width=34).pack(anchor="w")
+        ttk.Combobox(row_method, textvariable=method_var, values=AVAILABLE_METHODS, state="readonly", width=22).pack(anchor="w", pady=2)
+
+        weight_var = tk.DoubleVar(value=saved_weight)
+        _spin_row("Score Weight (Number closer to 0 puts more weight on TG, closer to 1 puts more weight on PP)\nRecommend setting weighting to low end (0.2-0.4) due to PP usually being orders of magnitude higher\nthan TG:", weight_var, 0.0, 1.0, 0.05, fmt="%.2f")
+
         ctx_var = tk.IntVar(value=saved_ctx)
-        ttk.Spinbox(row2, from_=512, to=131072, increment=512, textvariable=ctx_var, width=10).pack(anchor="w", pady=2)
+        _spin_row("Context Size:", ctx_var, 512, 131072, 512, width=10)
+
+        trials_var = tk.IntVar(value=saved_trials)
+        _spin_row("Bayesian Trials:", trials_var, 1, 500, 1, width=8)
+
+        avg_var = tk.IntVar(value=saved_avg)
+        _spin_row("Average Runs / Trial:", avg_var, 1, 10, 1, width=8)
+
+        seed_var = tk.IntVar(value=saved_seed)
+        _spin_row("Seed:", seed_var, 0, 2147483647, 1, width=10)
 
         def _ok():
-            w = weight_var.get()
-            c = ctx_var.get()
-            result[0] = (w, c)
+            result[0] = {
+                "method": method_var.get(),
+                "metric_weight": weight_var.get(),
+                "context_size": ctx_var.get(),
+                "trials": trials_var.get(),
+                "avg_runs": avg_var.get(),
+                "seed": seed_var.get(),
+            }
             try:
                 data = _load_config()
-                data["optimiser_weight"] = w
-                data["optimiser_context_size"] = c
+                data.update({
+                    "optimiser_method": result[0]["method"],
+                    "optimiser_weight": result[0]["metric_weight"],
+                    "optimiser_context_size": result[0]["context_size"],
+                    "optimiser_trials": result[0]["trials"],
+                    "optimiser_avg_runs": result[0]["avg_runs"],
+                    "optimiser_seed": result[0]["seed"],
+                })
                 _save_config(data)
             except Exception:
                 pass
@@ -1625,11 +1658,10 @@ class LlamaServerGUI:
         dlg.wait_window()
         return result[0]
 
-    def _show_progress_window(self, model_path, server_exe, context_size, metric_weight):
+    def _show_progress_window(self, request):
         """Show optimisation progress window. Returns final_config dict or None."""
         import threading as _threading
         import time as _time
-        import optimiser_script as _opt
 
         win = Toplevel(self.root)
         win.title("Optimisation in Progress")
@@ -1710,19 +1742,11 @@ class LlamaServerGUI:
 
         def _run_thread():
             try:
-                draft_path = None
-                if self.config.spec_enabled:
-                    draft_path = self.config.draft_model_path.strip() if self.config.draft_model_path else None
-
-                result = _opt.run_full_optimisation(
-                    model_path=model_path,
-                    server_exe=server_exe,
-                    context_size=context_size,
-                    metric_weight=metric_weight,
+                result = OptimisationService().run(
+                    request=request,
                     progress_callback=_progress_callback,
                     cancel_flag=cancel_flag,
                     proc_holder=proc_holder,
-                    draft_model_path=draft_path,
                 )
                 final_config_holder[0] = result
             finally:
@@ -1765,61 +1789,111 @@ class LlamaServerGUI:
         text_area = tk.Text(win, width=60, height=16, font=("Consolas", 9), wrap="word")
         text_area.pack(fill="both", expand=True, padx=10, pady=4)
 
+        def _safe_float(value, default=0.0):
+            try:
+                return float(value)
+            except Exception:
+                return default
+
+        def _safe_int(value, default):
+            try:
+                return int(value)
+            except Exception:
+                return default
+
         ctx = final_config.get("context_size", 16384)
-        baseline = final_config.get("baseline_score", 0.0)
-        best     = final_config.get("best_score", 0.0)
-        best_pp  = final_config.get("best_pp", 0.0)
-        best_tg  = final_config.get("best_tg", 0.0)
+        method = final_config.get("method", "unknown")
+        threads = final_config.get("threads", "")
+        thread_batch = final_config.get("thread_batch", threads)
+        batch = final_config.get("batch", "")
+        micro_batch = final_config.get("micro_batch", batch)
+        fitt = final_config.get("fitt", 128)
+        cache_k = final_config.get("cache_k", "f16")
+        cache_v = final_config.get("cache_v", "f16")
+        baseline = _safe_float(final_config.get("baseline_score", 0.0))
+        best     = _safe_float(final_config.get("best_score", 0.0))
+        best_pp  = _safe_float(final_config.get("best_pp", 0.0))
+        best_tg  = _safe_float(final_config.get("best_tg", 0.0))
+        default_trial_score = final_config.get("default_trial_score")
+        default_trial_pp = final_config.get("default_trial_pp")
+        default_trial_tg = final_config.get("default_trial_tg")
         pct_gain = ((best - baseline) / baseline * 100) if baseline > 0 else 0.0
 
+        threads = _safe_int(threads, threads)
+        thread_batch = _safe_int(thread_batch, thread_batch)
+        batch = _safe_int(batch, batch)
+        micro_batch = _safe_int(micro_batch, micro_batch)
+        fitt = _safe_int(fitt, fitt)
+
         lines = [
-            f"Threads:          {final_config['threads']}",
-            f"Batch Size:       {final_config['batch']}",
-            f"FITT Target:      {final_config['fitt']}",
-            f"Cache K:          {final_config['cache_k']}",
-            f"Cache V:          {final_config.get('cache_v', 'f16')}",
+            f"Method:           {method}",
+            f"Threads:          {threads}",
+            f"Thread Batch:     {thread_batch}",
+            f"Batch Size:       {batch}",
+            f"Micro-Batch:      {micro_batch}",
+            f"FITT Target:      {fitt}",
+            f"Cache K:          {cache_k}",
+            f"Cache V:          {cache_v}",
             f"",
-            f"Baseline Score:   {baseline:.2f}",
+            f"Baseline Score:   {baseline:.2f} (base command)",
             f"Best Score:       {best:.2f}",
             f"Best PP Speed:    {best_pp:.2f} t/s",
             f"Best TG Speed:    {best_tg:.2f} t/s",
             f"Improvement:      {pct_gain:.2f}%",
+        ]
+        if default_trial_score is not None:
+            lines.extend([
+                f"",
+                f"Trial 0:          {default_trial_score} (default config, not base baseline)",
+                f"Trial 0 PP:       {default_trial_pp} t/s",
+                f"Trial 0 TG:       {default_trial_tg} t/s",
+            ])
+        lines.extend([
             f"",
             "Recommended flags for llama-server:",
-            f"-t {final_config['threads']} -b {final_config['batch']} -ub {final_config['batch']} "
-            f"-fitt {final_config['fitt']} -ctk {final_config['cache_k']} -ctv {final_config.get('cache_v', 'f16')}",
-        ]
+            f"-t {threads} -tb {thread_batch} -b {batch} -ub {micro_batch} "
+            f"-fitt {fitt} -ctk {cache_k} -ctv {cache_v}",
+        ])
         text_area.insert("1.0", "\n".join(lines))
         text_area.configure(state="disabled")
 
         def _apply():
-            self.config.threads = final_config["threads"]
-            self.config.batch_size = final_config["batch"]
-            self.config.micro_batch_size = final_config["fitt"]
-            self.config.cache_type_k = final_config["cache_k"]
+            self.config.threads = threads
+            self.config.thread_batch = thread_batch
+            self.config.batch_size = batch
+            self.config.micro_batch_size = micro_batch
+            self.config.fitt = fitt
+            self.config.cache_type_k = cache_k
+            self.config.cache_type_v = cache_v
             # Update Tk variables so the command box refreshes
             try:
-                self._tk["threads_val"].set(final_config["threads"])
+                self._tk["threads_val"].set(threads)
             except Exception: pass
             try:
-                self._tk["batch_size"].set(final_config["batch"])
+                self._tk["thread_batch"].set(thread_batch)
             except Exception: pass
             try:
-                self._tk["micro_batch"].set(final_config["fitt"])
+                self._tk["batch_size"].set(batch)
             except Exception: pass
             try:
-                self._tk["cache_type_k"].set(final_config["cache_k"])
+                self._tk["micro_batch"].set(micro_batch)
             except Exception: pass
             try:
-                self._tk["cache_type_v"].set(final_config.get("cache_v", "f16"))
+                self._tk["fitt"].set(fitt)
+            except Exception: pass
+            try:
+                self._tk["cache_type_k"].set(cache_k)
+            except Exception: pass
+            try:
+                self._tk["cache_type_v"].set(cache_v)
             except Exception: pass
             _close_results_window()
 
         def _copy():
             import tkinter as tk
-            flags = (f"-t {final_config['threads']} -b {final_config['batch']} "
-                     f"-ub {final_config['batch']} -ctx 16384 -fitt {final_config['fitt']} "
-                     f"-ctk {final_config['cache_k']} -ctv {final_config.get('cache_v', 'f16')}")
+            flags = (f"-t {threads} -tb {thread_batch} -b {batch} "
+                     f"-ub {micro_batch} -c {ctx} -fitt {fitt} "
+                     f"-ctk {cache_k} -ctv {cache_v}")
             self.root.clipboard_clear()
             self.root.clipboard_append(flags)
 
@@ -1841,7 +1915,7 @@ class LlamaServerGUI:
             self.cmd_text.configure(state='disabled')
 
     def _run_optimiser(self):
-        """entry point for optimiser, sequential greedy and neighbourhood"""
+        """entry point for modular optimisation service"""
         from tkinter import messagebox
 
         # Warning dialog (custom Toplevel so geometry persists)
@@ -1910,11 +1984,26 @@ class LlamaServerGUI:
         cfg = self._show_optimiser_config_dialog()
         if cfg is None:
             return
-        metric_weight, context_size = cfg
+
+        draft_path = None
+        if self.config.spec_enabled:
+            draft_path = self.config.draft_model_path.strip() if self.config.draft_model_path else None
+
+        request = OptimisationRequest(
+            model_path=model_path,
+            server_exe=server_exe,
+            context_size=cfg["context_size"],
+            metric_weight=cfg["metric_weight"],
+            method=cfg["method"],
+            draft_model_path=draft_path,
+            trials=cfg["trials"],
+            avg_runs=cfg["avg_runs"],
+            seed=cfg["seed"],
+        )
 
         # Run optimiser
         try:
-            final_config = self._show_progress_window(model_path, server_exe, context_size, metric_weight)
+            final_config = self._show_progress_window(request)
         except Exception as e:
             messagebox.showerror("Error", f"Optimisation failed:\n{e}")
             return
@@ -1923,8 +2012,9 @@ class LlamaServerGUI:
             messagebox.showinfo("Results", "No valid results collected.")
             return
 
-        # Pass context_size into config for display in results
-        final_config["context_size"] = context_size
+        # Pass request details into config for display in results
+        final_config["context_size"] = request.context_size
+        final_config["method"] = request.method
         self._show_results_window(final_config)
 
 

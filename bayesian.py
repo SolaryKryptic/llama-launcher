@@ -5,9 +5,9 @@ Uses Optuna (TPE) to search mixed parameter space and wraps
 
 Run as a standalone script for quick tests. Example:
 
-    python bayesian.py --model "path/to/model.gguf" --server llama-server.exe
+    python bayesian.py --model "path/to/model.gguf"
 
-If `optuna` is not installed, the script prints instructions to install it.
+If `optuna` is not installed, the script prints instructions to install it
 """
 
 import argparse
@@ -32,10 +32,10 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
     `optimiser_script.run_full_optimisation`. Returns a final_config dict
     matching the existing optimiser's returned structure, or None on failure.
     
-    If mtp=True or draft_model_path is set, includes spec_draft_n parameter for MTP/Speculative decoding.
+    If mtp=True or draft_model_path is set, includes spec_draft_n parameter for MTP
     """
     if optuna is None:
-        raise RuntimeError("optuna is not available — install with `pip install optuna`")
+        raise RuntimeError("optuna is not available —> install with `pip install optuna`")
 
     if cancel_flag is None:
         cancel_flag = [False]
@@ -58,6 +58,7 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
     if baseline_score <= 0:
         print("[ERROR] Baseline measurement failed or produced non-positive score.")
         return None
+    print(f"[INFO] Base command baseline score: {baseline_score:.2f} (no tuned -t/-tb/-b/-ub/-fa/-fit/-ct flags).")
 
     params = opt.build_thread_list()
     threads_choices = params.get("threads") or [max(1, params.get("cap_limit", 1))]
@@ -82,7 +83,7 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         direction="maximize",
         sampler=optuna.samplers.TPESampler(
             seed=seed,
-            n_startup_trials=min(9, max(1, n_trials // 3)),
+            n_startup_trials=min(25, max(15, n_trials // 4)),
         ),
     )
     
@@ -93,7 +94,7 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
 
     csv_fieldnames = [
         "number", "state", "value", "pp", "tg", "best_value", "error",
-        "effective_thread_batch",
+        "trial_role", "effective_thread_batch",
         "param_threads", "param_thread_batch", "param_batch", "param_micro_batch",
         "param_fitt", "param_cache_k", "param_cache_v",
     ]
@@ -103,8 +104,10 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
     # Early stopping: track consecutive trials without improvement
     early_stop_state = {"best_value": None, "no_improve_count": 0}
 
+    n_startup = min(25, max(15, n_trials // 4))
+
     def callback(study, trial):
-        """Called after each trial completes. Stop on time budget or no-improve streak."""
+        """Called after each trial completes. Stop on time budget or no-improve streak"""
         try:
             current_best = study.best_value
             display_best = current_best if current_best is not None else baseline_score
@@ -121,11 +124,14 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
                 early_stop_state["no_improve_count"] = 0
             elif current_best is not None:
                 early_stop_state["no_improve_count"] += 1
-                if early_stop_state["no_improve_count"] >= 15:
+                past_startup = len([t for t in study.trials if t.value is not None]) > n_startup
+                if past_startup and early_stop_state["no_improve_count"] >= 15:
                     print("[INFO] Early stopping: 15 consecutive trials without improvement.")
                     study.stop()
 
             if trial_log:
+                trial_role = trial.user_attrs.get("trial_role", "trial")
+                step_name = "DefaultConfig" if trial_role == "default_config" else f"Trial-{trial.number+1}"
                 row = {
                     "number": trial.number,
                     "state": trial.state.name,
@@ -134,6 +140,7 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
                     "tg": trial.user_attrs.get("tg"),
                     "best_value": display_best,
                     "error": trial.user_attrs.get("error"),
+                    "trial_role": trial_role,
                     "effective_thread_batch": trial.user_attrs.get("thread_batch_effective"),
                 }
                 row.update({f"param_{k}": v for k, v in trial.params.items()})
@@ -151,7 +158,8 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
 
         t = trial.suggest_categorical("threads", threads_choices)
         tb_candidate = trial.suggest_categorical("thread_batch", thread_batch_choices)
-        tb = next_higher_thread_batch(t)
+        # Clamp: thread_batch must be >= threads; pick the next valid choice above t
+        tb = tb_candidate if tb_candidate >= t else next_higher_thread_batch(t)
         trial.set_user_attr("thread_batch_candidate", tb_candidate)
         trial.set_user_attr("thread_batch_effective", tb)
         b = trial.suggest_categorical("batch", batch_choices)
@@ -160,8 +168,21 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         fitt = trial.suggest_categorical("fitt", fitt_choices)
         ck = trial.suggest_categorical("cache_k", cache_k_choices)
         cv = trial.suggest_categorical("cache_v", cache_v_choices)
-        sdn = trial.suggest_int("spec_draft_n", min(spec_draft_n_choices), max(spec_draft_n_choices)) if is_speculative else None
+        sdn = trial.suggest_categorical("spec_draft_n", spec_draft_n_choices) if is_speculative else None
         sdp = trial.suggest_float("spec_draft_p_min", 0.1, 0.9, step=0.1) if is_speculative else None
+
+        # trial_role: compare effective params (using tb, not tb_candidate) against baseline
+        effective_params = {
+            "threads": t, "thread_batch": tb, "batch": b,
+            "micro_batch": ub, "fitt": fitt, "cache_k": ck, "cache_v": cv,
+        }
+        if is_speculative:
+            effective_params["spec_draft_n"] = sdn
+            effective_params["spec_draft_p_min"] = round(sdp, 1) if sdp is not None else None
+        baseline_effective = dict(baseline_trial)
+        baseline_effective["thread_batch"] = next_higher_thread_batch(baseline_trial["threads"])
+        trial_role = "default_config" if all(effective_params.get(k) == v for k, v in baseline_effective.items()) else "trial"
+        trial.set_user_attr("trial_role", trial_role)
 
         def benchmark_with_retry():
             last_error = None
@@ -216,7 +237,8 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         except Exception:
             best = baseline_score
         if progress_callback:
-            progress_callback(trial.number + 1, n_trials, f"Trial-{trial.number+1}", score, best, baseline_score)
+            step_name = "DefaultConfig" if trial_role == "default_config" else f"Trial-{trial.number+1}"
+            progress_callback(trial.number + 1, n_trials, step_name, score, best, baseline_score)
 
         # If measurement failed, reject trial.
         return score
@@ -245,6 +267,10 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
 
     try:
         study.enqueue_trial(baseline_trial)
+        print(
+            "[INFO] Enqueued default config trial, separate from base baseline: "
+            f"-t {default_threads} -tb {default_tb} -b {default_b} -ub {default_ub}"
+        )
     except Exception as e:
         print(f"[DEBUG] Could not enqueue baseline trial: {e}")
 
@@ -269,6 +295,10 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
     best_trial = max(successful_trials, key=lambda trial: trial.value)
     best_params = best_trial.params
     best_score = best_trial.value
+    default_trial = next(
+        (trial for trial in study.trials if trial.user_attrs.get("trial_role") == "default_config"),
+        None,
+    )
 
     final_config = {
         "threads": best_params["threads"],
@@ -285,11 +315,16 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         "spec_draft_n": best_params.get("spec_draft_n") if is_speculative else None,
         "spec_draft_p_min": best_params.get("spec_draft_p_min") if is_speculative else None,
         "draft_model_path": draft_model_path,
+        "baseline_is_base_command": True,
         "baseline_score": f"{baseline_score:.2f}",
         "best_score": f"{best_score:.2f}",
         "best_pp": f"{best_trial.user_attrs.get('pp', 0.0):.2f}",
         "best_tg": f"{best_trial.user_attrs.get('tg', 0.0):.2f}",
     }
+    if default_trial is not None:
+        final_config["default_trial_score"] = f"{default_trial.value:.2f}"
+        final_config["default_trial_pp"] = f"{default_trial.user_attrs.get('pp', 0.0):.2f}"
+        final_config["default_trial_tg"] = f"{default_trial.user_attrs.get('tg', 0.0):.2f}"
     return final_config
 
 

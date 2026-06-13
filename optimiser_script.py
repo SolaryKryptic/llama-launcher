@@ -4,12 +4,11 @@ import re
 import os
 import socket
 import time
-import bayesian as bayes
 import requests
 
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
 
-BENCH_PORT = 8080  # Fixed port for optimiser server instances
+BENCH_PORT = 19876  # Fixed port for optimiser server instances
 
 PP_PROMPT = (
     "The history of artificial intelligence is a long and complex story that spans decades of research, "
@@ -40,7 +39,7 @@ TG_N_PREDICT = 128
 
 def build_thread_list():
     """Build thread sweep list based on detected CPU count.
-    If CPU count cannot be detected, threads list is empty and thread sweep is skipped.
+    If CPU count cannot be detected, threads list is empty and thread sweep is skipped
     
     Returns:
         threads: up to 75% of max threads (for -t flag)
@@ -149,7 +148,6 @@ def start_server(model_path, server_exe, context_size, proc_holder=None, **confi
     proc = subprocess.Popen(
         cmd,
         # creationflags=subprocess.CREATE_NEW_CONSOLE,
-        stdout=subprocess.PIPE,
         stderr=subprocess.PIPE, # Pipe stderr so we can inspect errors when server fails to start
         creationflags=_NO_WINDOW,
     )
