@@ -4,12 +4,12 @@ import re
 import os
 import socket
 import time
-
+import bayesian as bayes
 import requests
 
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
 
-BENCH_PORT = 19876  # Fixed port for optimiser server instances
+BENCH_PORT = 8080  # Fixed port for optimiser server instances
 
 PP_PROMPT = (
     "The history of artificial intelligence is a long and complex story that spans decades of research, "
@@ -68,12 +68,12 @@ def build_thread_list():
     return {
         "threads": threads_list,
         "thread_batch": thread_batch_list,
-        "batch_sizes": [512, 1024, 2048],
-        "micro_batch_sizes": [256, 512, 1024],
-        "fitt_targets": [128],
+        "batch_sizes": [128, 256, 512, 1024, 2048],
+        "micro_batch_sizes": [128, 256, 512, 1024, 2048],
+        "fitt_targets": [50],
         "cache_k_types": ["f16", "q8_0", "q5_0", "q4_0"],
         "cache_v_types": ["f16", "q8_0", "q5_0", "q4_0"],
-        "spec_draft_n": list(range(1, 8)),  # 1-7 for MTP speculative decoding
+        "spec_draft_n": list(range(1, 5)),  # 1-4 for MTP speculative decoding
         "max_threads": max_threads,
         "cap_limit": cap_limit_75,
     }
@@ -106,7 +106,7 @@ def build_server_flags(context_size, t=None, tb=None, b=None, ub=None, fitt=None
     flags = [
         "-c", str(context_size),
         "--port", str(BENCH_PORT),
-        "-lv", "4",
+        "-lv", "3",
         "--host", "127.0.0.1",
         "-np", "1",
         "--no-warmup",
@@ -165,8 +165,11 @@ def wait_for_server(port=BENCH_PORT, timeout=120, proc=None):
     while time.time() < deadline:
         # Check if the process has terminated prematurely
         if proc is not None and proc.poll() is not None:
+            err = read_process_stderr(proc)
             print(f"[DEBUG] Server process terminated prematurely with exit code {proc.returncode}.")
-            break
+            if err:
+                print("[SERVER STDERR]\n" + err)
+            return False
         try:
             r = requests.get(url, timeout=2)
             if r.status_code == 200:
@@ -202,6 +205,20 @@ def stop_server(proc):
             proc.kill()
         except Exception:
             pass
+
+
+def read_process_stderr(proc, max_chars=12000):
+    if proc is None or proc.stderr is None:
+        return ""
+    try:
+        err = proc.stderr.read().decode(errors="ignore")
+    except Exception as e:
+        return f"[stderr read failed: {e}]"
+    if not err:
+        return ""
+    if len(err) <= max_chars:
+        return err
+    return err[-max_chars:]
 
 
 def run_completion(port=BENCH_PORT):
@@ -271,13 +288,19 @@ def run_benchmark(model_path, server_exe, context_size, proc_holder=None,
             print(f"[DEBUG] Result: pp={pp:.2f} tg={tg:.2f}")
 
             if pp == 0 and tg == 0:
-                print(f"[DEBUG] Benchmark returned 0 speed. Terminating server to inspect logs...")
-                stop_server(proc)
-                if proc.stderr:
-                    err = proc.stderr.read().decode(errors="ignore")
+                print(f"[DEBUG] Benchmark returned 0 speed. Inspecting server logs...")
+                stderr_printed = False
+                if proc.poll() is not None:
+                    err = read_process_stderr(proc)
                     if err:
-                        print("[SERVER STDERR]\n" + err)
-
+                        print("[SERVER STDERR AFTER COMPLETION FAILURE]\n" + err)
+                        stderr_printed = True
+                stop_server(proc)
+                if not stderr_printed:
+                    err = read_process_stderr(proc)
+                    if err:
+                        print("[SERVER STDERR AFTER TERMINATION]\n" + err)
+                continue
             if pp > 0 and tg > 0:
                 pp_total += pp
                 tg_total += tg

@@ -70,7 +70,13 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
     fitt_choices = params.get("fitt_targets", [50])
     cache_k_choices = params.get("cache_k_types", ["f16", "q8_0", "q5_0", "q4_0"])
     cache_v_choices = params.get("cache_v_types", ["f16", "q8_0", "q5_0", "q4_0"])
-    spec_draft_n_choices = params.get("spec_draft_n", list(range(1, 8))) if is_speculative else None
+    spec_draft_n_choices = params.get("spec_draft_n", list(range(1, 5))) if is_speculative else None
+
+    def next_higher_thread_batch(current_t):
+        for choice in sorted(set(thread_batch_choices)):
+            if choice > current_t:
+                return choice
+        return max(thread_batch_choices)
     
     study = optuna.create_study(
         direction="maximize",
@@ -87,6 +93,7 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
 
     csv_fieldnames = [
         "number", "state", "value", "pp", "tg", "best_value", "error",
+        "effective_thread_batch",
         "param_threads", "param_thread_batch", "param_batch", "param_micro_batch",
         "param_fitt", "param_cache_k", "param_cache_v",
     ]
@@ -127,6 +134,7 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
                     "tg": trial.user_attrs.get("tg"),
                     "best_value": display_best,
                     "error": trial.user_attrs.get("error"),
+                    "effective_thread_batch": trial.user_attrs.get("thread_batch_effective"),
                 }
                 row.update({f"param_{k}": v for k, v in trial.params.items()})
                 writer = csv.DictWriter(trial_log, fieldnames=csv_fieldnames, extrasaction="ignore")
@@ -142,7 +150,10 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
             raise optuna.TrialPruned()
 
         t = trial.suggest_categorical("threads", threads_choices)
-        tb = trial.suggest_categorical("thread_batch", thread_batch_choices)
+        tb_candidate = trial.suggest_categorical("thread_batch", thread_batch_choices)
+        tb = next_higher_thread_batch(t)
+        trial.set_user_attr("thread_batch_candidate", tb_candidate)
+        trial.set_user_attr("thread_batch_effective", tb)
         b = trial.suggest_categorical("batch", batch_choices)
         ub_candidate = trial.suggest_categorical("micro_batch", micro_batch_choices)
         ub = min(ub_candidate, b)
@@ -152,22 +163,47 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         sdn = trial.suggest_int("spec_draft_n", min(spec_draft_n_choices), max(spec_draft_n_choices)) if is_speculative else None
         sdp = trial.suggest_float("spec_draft_p_min", 0.1, 0.9, step=0.1) if is_speculative else None
 
-        try:
-            pp, tg = opt.run_benchmark(
-                model_path, server_exe, context_size,
-                proc_holder=proc_holder,
-                t=t, tb=tb, b=b, ub=ub, fitt=fitt,
-                cache_k=ck, cache_v=cv,
-                mtp=is_speculative, spec_draft_n=sdn,
-                avg_runs=avg_runs, draft_model_path=draft_model_path,
-                spec_draft_p_min=sdp
-            )
-        except KeyboardInterrupt:
-            raise
-        except Exception as e:
-            print(f"[DEBUG] Benchmark failed: {e}")
-            trial.set_user_attr("error", str(e))
+        def benchmark_with_retry():
+            last_error = None
+            for attempt in range(1, 4):
+                if cancel_flag and cancel_flag[0]:
+                    raise optuna.TrialPruned()
+
+                try:
+                    pp, tg = opt.run_benchmark(
+                        model_path, server_exe, context_size,
+                        proc_holder=proc_holder,
+                        t=t, tb=tb, b=b, ub=ub, fitt=fitt,
+                        cache_k=ck, cache_v=cv,
+                        mtp=is_speculative, spec_draft_n=sdn,
+                        avg_runs=avg_runs, draft_model_path=draft_model_path,
+                        spec_draft_p_min=sdp
+                    )
+                except KeyboardInterrupt:
+                    raise
+                except Exception as e:
+                    last_error = f"attempt {attempt}/3 failed with exception: {e}"
+                    print(f"[DEBUG] {last_error}")
+                    if attempt < 3:
+                        time.sleep(3)
+                    continue
+
+                if pp == 0 and tg == 0:
+                    last_error = f"attempt {attempt}/3 returned zero speed"
+                    print(f"[DEBUG] {last_error}")
+                    if attempt < 3:
+                        time.sleep(3)
+                    continue
+
+                return pp, tg, None
+
+            return 0.0, 0.0, f"all 3 attempts failed; last: {last_error}"
+
+        pp, tg, bench_error = benchmark_with_retry()
+        if bench_error:
+            trial.set_user_attr("error", bench_error)
             return float("-inf")
+
         score = opt.calculate_score(pp, tg, metric_weight)
 
         # Save prompt processing and text generation speeds to avoid a final verification run
@@ -183,14 +219,11 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
             progress_callback(trial.number + 1, n_trials, f"Trial-{trial.number+1}", score, best, baseline_score)
 
         # If measurement failed, reject trial.
-        if pp == 0 and tg == 0:
-            trial.set_user_attr("error", "benchmark returned zero speed")
-            return float("-inf")
         return score
 
     # Warm-start with a sensible baseline configuration
     default_threads = threads_choices[-1] if threads_choices else max(1, params.get("cap_limit", 1))
-    default_tb = thread_batch_choices[-1] if thread_batch_choices else default_threads
+    default_tb = next_higher_thread_batch(default_threads)
     default_b = 512 if 512 in batch_choices else batch_choices[0]
     default_ub = min(default_b, 512 if 512 in micro_batch_choices else micro_batch_choices[0])
     default_fitt = fitt_choices[0]
@@ -239,7 +272,10 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
 
     final_config = {
         "threads": best_params["threads"],
-        "thread_batch": best_params.get("thread_batch", best_params["threads"]),
+        "thread_batch": best_trial.user_attrs.get(
+            "thread_batch_effective",
+            next_higher_thread_batch(best_params.get("thread_batch", best_params["threads"])),
+        ),
         "batch": best_params["batch"],
         "micro_batch": best_params.get("micro_batch", best_params["batch"]),
         "fitt": best_params["fitt"],
