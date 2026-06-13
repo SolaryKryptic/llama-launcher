@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import subprocess
 import webbrowser
 from tkinter import filedialog, messagebox, Tk, Toplevel, StringVar
@@ -604,6 +605,24 @@ class LlamaServerGUI:
         x = max(0, (screen_w - default_width) // 2)
         y = max(0, (screen_h - default_height) // 2)
         win.geometry(f"{default_width}x{default_height}+{x}+{y}")
+
+    def _ensure_min_geometry(self, win, min_width, min_height):
+        """Force a Toplevel to at least min_width x min_height."""
+        geom = win.geometry()
+        match = re.match(r"(\d+)x(\d+)", geom)
+        if not match:
+            return
+        width = int(match.group(1))
+        height = int(match.group(2))
+        if width >= min_width and height >= min_height:
+            return
+        win.geometry(f"{min_width}x{min_height}")
+        win.update_idletasks()
+        screen_w = win.winfo_screenwidth()
+        screen_h = win.winfo_screenheight()
+        x = max(0, (screen_w - min_width) // 2)
+        y = max(0, (screen_h - min_height) // 2)
+        win.geometry(f"{min_width}x{min_height}+{x}+{y}")
 
     def _save_window_geometry(self, config_key, win):
         """Save current Toplevel geometry to config."""
@@ -1583,6 +1602,7 @@ class LlamaServerGUI:
         dlg.grab_set()
         dlg.resizable(False, False)
         self._restore_window_geometry(dlg, "window_geometry_optimiser_settings", 650, 320)
+        self._ensure_min_geometry(dlg, 650, 320)
         dlg.minsize(650, 320)
 
         def _close_optimiser_settings():
@@ -1668,6 +1688,8 @@ class LlamaServerGUI:
         win.transient(self.root)
         win.grab_set()
         self._restore_window_geometry(win, "window_geometry_optimisation_in_progress", 620, 380)
+        self._ensure_min_geometry(win, 620, 380)
+        win.minsize(620, 380)
 
         def _close_progress_window():
             if win.winfo_exists():
@@ -1682,6 +1704,7 @@ class LlamaServerGUI:
         cancel_flag = [False]
         proc_holder = [None]
         final_config_holder = [None]
+        error_holder = [None]
 
         ttk.Label(win, text="Optimisation in Progress", font=("Segoe UI", 12, "bold")).pack(pady=(10, 4))
 
@@ -1742,6 +1765,7 @@ class LlamaServerGUI:
 
         def _run_thread():
             try:
+                print(f"[INFO] Starting optimisation method: {request.method}")
                 result = OptimisationService().run(
                     request=request,
                     progress_callback=_progress_callback,
@@ -1749,6 +1773,9 @@ class LlamaServerGUI:
                     proc_holder=proc_holder,
                 )
                 final_config_holder[0] = result
+            except Exception as e:
+                error_holder[0] = e
+                final_config_holder[0] = None
             finally:
                 # Ensure the server process is properly stopped after optimization completes
                 try:
@@ -1769,7 +1796,7 @@ class LlamaServerGUI:
                     self.root.after(0, _close_progress_window)
         _threading.Thread(target=_run_thread, daemon=True).start()
         win.wait_window()
-        return final_config_holder[0]
+        return final_config_holder[0], error_holder[0]
 
     def _show_results_window(self, final_config):
         """show optimisation results, best config and recommended flags"""
@@ -2003,9 +2030,13 @@ class LlamaServerGUI:
 
         # Run optimiser
         try:
-            final_config = self._show_progress_window(request)
+            final_config, optimisation_error = self._show_progress_window(request)
         except Exception as e:
             messagebox.showerror("Error", f"Optimisation failed:\n{e}")
+            return
+
+        if optimisation_error is not None:
+            messagebox.showerror("Error", f"Optimisation failed:\n{optimisation_error}")
             return
 
         if not final_config:
