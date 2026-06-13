@@ -109,6 +109,7 @@ def build_server_flags(context_size, t=None, tb=None, b=None, ub=None, fitt=None
         "--host", "127.0.0.1",
         "-np", "1",
         "--no-warmup",
+        "--no-mmap"
     ]
     if draft_model_path:
         flags += ["--model-draft", draft_model_path]
