@@ -8,6 +8,8 @@ Point-and-click interface to configure and generate `llama-server` command-line 
 
 <img width="765" height="894" alt="image" src="https://github.com/user-attachments/assets/84888536-f92f-488e-bc87-10e53cb829d8" />
 
+<img width="603" height="527" alt="image" src="https://github.com/user-attachments/assets/f83397b1-c1f8-4a3d-8c7e-1858216613e3" />
+
 
 ## Features
 
