@@ -9,13 +9,16 @@ Point-and-click interface to configure and generate `llama-server` command-line 
 <img width="765" height="894" alt="image" src="https://github.com/user-attachments/assets/84888536-f92f-488e-bc87-10e53cb829d8" />
 
 
-Gemma 12B MTP results after optimisation
+- Gemma 12B MTP results after optimisation
 <img width="603" height="527" alt="image" src="https://github.com/user-attachments/assets/f83397b1-c1f8-4a3d-8c7e-1858216613e3" />
 
 
-Qwen3.5 4B MTP results after optimisation
-<img width="606" height="551" alt="image" src="https://github.com/user-attachments/assets/e1e1e759-33db-49d8-ae0b-d0c7afbcdb74" />
+- Gemma E4B MTP results after optimisation
+<img width="604" height="551" alt="image" src="https://github.com/user-attachments/assets/a55af24c-3cfd-4b07-be91-acb5935d12e1" />
 
+
+- Gemma E4B no MTP results after optimisation (optimisation seems to have the best gains with MTP)
+<img width="602" height="549" alt="image" src="https://github.com/user-attachments/assets/c11fd7be-3778-44f4-8613-ae76a34ae051" />
 
 
 ## Features
