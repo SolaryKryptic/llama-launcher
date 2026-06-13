@@ -1645,19 +1645,19 @@ class LlamaServerGUI:
         ttk.Combobox(row_method, textvariable=method_var, values=AVAILABLE_METHODS, state="readonly", width=22).pack(anchor="w", pady=2)
 
         weight_var = tk.DoubleVar(value=saved_weight)
-        _spin_row("Score Weight: (Value closer to 0 puts more weight on TG, closer to 1 puts more weight on PP)\nRecommend setting weighting to lower end (0.2-0.4) by default due to PP \nusually being x times higher than TG:", weight_var, 0.0, 1.0, 0.05, fmt="%.2f")
+        _spin_row("Score Weight: (Value closer to 0 puts more weight on TG, closer to 1 puts more weight on PP)\nRecommend setting weighting to lower end (0.2-0.4) by default due to PP \nusually being x times larger than TG:", weight_var, 0.0, 1.0, 0.05, fmt="%.2f")
 
         ctx_var = tk.IntVar(value=saved_ctx)
         _spin_row("Context Size:", ctx_var, 512, 131072, 512, width=10)
 
         trials_var = tk.IntVar(value=saved_trials)
-        _spin_row("Bayesian Trials:", trials_var, 1, 500, 1, width=8)
+        _spin_row("Bayesian Trial Count (recommended 40):", trials_var, 1, 500, 1, width=8)
 
         avg_var = tk.IntVar(value=saved_avg)
-        _spin_row("Average Runs / Trial:", avg_var, 1, 10, 1, width=8)
+        _spin_row("Runs per Trial (recommended 1):", avg_var, 1, 10, 1, width=8)
 
         seed_var = tk.IntVar(value=saved_seed)
-        _spin_row("Seed:", seed_var, 0, 2147483647, 1, width=10)
+        _spin_row("Seed (keep the same between optimisation runs for reproducibility):", seed_var, 0, 2147483647, 1, width=10)
 
         def _ok():
             result[0] = {
