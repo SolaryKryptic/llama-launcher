@@ -2032,7 +2032,7 @@ class LlamaServerGUI:
         msg = (
             "Model Optimisation\n\n"
             "Your system will be under high load during this process.\n"
-            "Please save your work and close unnecessary applications.\n"
+            "Please save your work and close demanding applications.\n"
             "Proceed?"
         )
 
