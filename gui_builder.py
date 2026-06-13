@@ -74,6 +74,7 @@ class FlagConfig:
         self.spec_type = "ngram-mod"  # spec strategy, e g ngram mod or draft mtp
         self.spec_draft_n_max = 0       # spec draft max, 0 means unset
         self.spec_draft_n_min = 0       # spec draft min, 0 means unset
+        self.spec_draft_p_min = 0.0     # spec draft probability min, 0 means unset
         self.draft_model_path = ""       # draft model path for draft-mtp
 
         self.cache_type_k = "f16"      # kv cache type k
@@ -131,6 +132,8 @@ class FlagConfig:
                 parts.append(f" --spec-draft-n-max {self.spec_draft_n_max}")
             if self.spec_draft_n_min > 0:
                 parts.append(f" --spec-draft-n-min {self.spec_draft_n_min}")
+            if self.spec_draft_p_min > 0:
+                parts.append(f" --spec-draft-p-min {float(self.spec_draft_p_min):.1f}")
             draft_path = self.draft_model_path.strip()
             if draft_path:
                 parts.append(f' --model-draft "{draft_path}"')
@@ -200,6 +203,7 @@ class FlagConfig:
             "spec_type": self.spec_type,
             "spec_draft_n_max": self.spec_draft_n_max,
             "spec_draft_n_min": self.spec_draft_n_min,
+            "spec_draft_p_min": self.spec_draft_p_min,
             "draft_model_path": self.draft_model_path,
             "batch_size": self.batch_size,
             "micro_batch_size": self.micro_batch_size,
@@ -1119,10 +1123,12 @@ class LlamaServerGUI:
         iv_spec_draft = tk.BooleanVar(value=("draft-mtp" in self.config.spec_type))
         iv_spec_draft_max = tk.IntVar(value=self.config.spec_draft_n_max)
         iv_spec_draft_min = tk.IntVar(value=self.config.spec_draft_n_min)
+        iv_spec_draft_p_min = tk.DoubleVar(value=self.config.spec_draft_p_min)
         self._tk["spec_ngram"] = iv_spec_ngram
         self._tk["spec_draft"] = iv_spec_draft
         self._tk["spec_draft_max"] = iv_spec_draft_max
         self._tk["spec_draft_min"] = iv_spec_draft_min
+        self._tk["spec_draft_p_min"] = iv_spec_draft_p_min
 
         spec_row = ttk.Frame(spec_frame)
         spec_row.pack(fill="x")
@@ -1130,18 +1136,21 @@ class LlamaServerGUI:
 
         # Sub-options row (child of spec_frame — same pack master)
         spec_sub_row = ttk.Frame(spec_frame)
-        tk.Checkbutton(spec_sub_row, text="ngram-mod", variable=iv_spec_ngram).pack(side="left")
-        tk.Checkbutton(spec_sub_row, text="draft-mtp", variable=iv_spec_draft).pack(side="left", padx=(16, 0))
+        tk.Checkbutton(spec_sub_row, text="ngram-mod", variable=iv_spec_ngram).grid(row=0, column=0, sticky="w")
+        tk.Checkbutton(spec_sub_row, text="draft-mtp", variable=iv_spec_draft).grid(row=0, column=1, sticky="w", padx=(16, 0))
 
-        # Draft model inline block: browse button + label + max/min spinboxes
+        # Draft model inline block: browse button + label + max/min/p-min spinboxes
         spec_draft_row = ttk.Frame(spec_sub_row)
-        ttk.Button(spec_draft_row, text="Browse draft models...", command=self._browse_draft_model).pack(side="left", padx=(12, 0))
+        spec_draft_row.grid(row=1, column=0, columnspan=8, sticky="w", pady=(2, 0))
+        ttk.Button(spec_draft_row, text="Browse draft models...", command=self._browse_draft_model).pack(side="left", padx=(0, 4))
         self.draft_model_label = tk.Label(spec_draft_row, text="", anchor="w", justify="left", foreground="#666")
-        self.draft_model_label.pack(side="left", padx=(4, 0))
-        ttk.Label(spec_draft_row, text="Max:").pack(side="left", padx=(12, 0))
-        ttk.Spinbox(spec_draft_row, from_=0, to=64, textvariable=iv_spec_draft_max, width=4).pack(side="left", padx=(2, 0))
-        ttk.Label(spec_draft_row, text="Min:").pack(side="left", padx=(12, 0))
-        ttk.Spinbox(spec_draft_row, from_=0, to=64, textvariable=iv_spec_draft_min, width=4).pack(side="left", padx=(2, 0))
+        self.draft_model_label.pack(side="left", padx=(0, 8))
+        ttk.Label(spec_draft_row, text="Max:").pack(side="left")
+        ttk.Spinbox(spec_draft_row, from_=0, to=64, textvariable=iv_spec_draft_max, width=4).pack(side="left", padx=(2, 8))
+        ttk.Label(spec_draft_row, text="Min:").pack(side="left")
+        ttk.Spinbox(spec_draft_row, from_=0, to=64, textvariable=iv_spec_draft_min, width=4).pack(side="left", padx=(2, 8))
+        ttk.Label(spec_draft_row, text="P Min:").pack(side="left")
+        ttk.Spinbox(spec_draft_row, from_=0.0, to=1.0, increment=0.1, textvariable=iv_spec_draft_p_min, width=4, format="%.1f").pack(side="left", padx=(2, 0))
 
         def _update_spec_type():
             """build spec_type string from both checkboxes"""
@@ -1171,15 +1180,17 @@ class LlamaServerGUI:
             try:
                 _update_spec_type()
                 if iv_spec_draft.get():
-                    spec_draft_row.pack()
+                    spec_draft_row.grid()
                 else:
-                    spec_draft_row.pack_forget()
+                    spec_draft_row.grid_remove()
                     self.config.draft_model_path = ""
                     self.config.spec_draft_n_max = 0
                     self.config.spec_draft_n_min = 0
+                    self.config.spec_draft_p_min = 0.0
                     self.draft_model_label.config(text="")
                     iv_spec_draft_max.set(0)
                     iv_spec_draft_min.set(0)
+                    iv_spec_draft_p_min.set(0.0)
                 self._update_command()
             except Exception:
                 pass
@@ -1188,6 +1199,10 @@ class LlamaServerGUI:
             try:
                 self.config.spec_draft_n_max = max(0, iv_spec_draft_max.get())
                 self.config.spec_draft_n_min = max(0, iv_spec_draft_min.get())
+                raw_p_min = iv_spec_draft_p_min.get()
+                p_min = float(raw_p_min) if raw_p_min else 0.0
+                self.config.spec_draft_p_min = max(0.0, min(p_min, 1.0))
+                iv_spec_draft_p_min.set(self.config.spec_draft_p_min)
                 self._update_command()
             except (ValueError, TypeError, tk.TclError):
                 pass
@@ -1197,6 +1212,7 @@ class LlamaServerGUI:
         iv_spec_draft.trace_add("write", lambda *_: _on_spec_sub())
         iv_spec_draft_max.trace_add("write", lambda *_: (_on_spec_draft_spin(),))
         iv_spec_draft_min.trace_add("write", lambda *_: (_on_spec_draft_spin(),))
+        iv_spec_draft_p_min.trace_add("write", lambda *_: (_on_spec_draft_spin(),))
         # Restore sub-checkbox state from saved spec_type
         spec_type_val = self.config.spec_type or ""
         iv_spec_ngram.set("ngram-mod" in spec_type_val)
@@ -1205,7 +1221,7 @@ class LlamaServerGUI:
         if self.config.spec_enabled:
             spec_sub_row.pack()
             if iv_spec_draft.get():
-                spec_draft_row.pack()
+                spec_draft_row.grid()
         # Restore draft model label if saved
         if self.config.draft_model_path:
             display = "Using: " + os.path.basename(self.config.draft_model_path).rsplit(".gguf", 1)[0]
@@ -1830,21 +1846,42 @@ class LlamaServerGUI:
 
         ctx = final_config.get("context_size", 16384)
         method = final_config.get("method", "unknown")
-        threads = final_config.get("threads", "")
+        threads = final_config.get("threads", self.config.threads)
         thread_batch = final_config.get("thread_batch", threads)
-        batch = final_config.get("batch", "")
-        micro_batch = final_config.get("micro_batch", batch)
-        fitt = final_config.get("fitt", 128)
-        cache_k = final_config.get("cache_k", "f16")
-        cache_v = final_config.get("cache_v", "f16")
+        batch = final_config.get("batch", self.config.batch_size)
+        micro_batch = final_config.get("micro_batch", self.config.micro_batch_size)
+        fitt = final_config.get("fitt", self.config.fitt)
+        cache_k = final_config.get("cache_k", self.config.cache_type_k)
+        cache_v = final_config.get("cache_v", self.config.cache_type_v)
+        baseline_pp = _safe_float(final_config.get("baseline_pp", 0.0))
+        baseline_tg = _safe_float(final_config.get("baseline_tg", 0.0))
         baseline = _safe_float(final_config.get("baseline_score", 0.0))
         best     = _safe_float(final_config.get("best_score", 0.0))
         best_pp  = _safe_float(final_config.get("best_pp", 0.0))
         best_tg  = _safe_float(final_config.get("best_tg", 0.0))
-        default_trial_score = final_config.get("default_trial_score")
-        default_trial_pp = final_config.get("default_trial_pp")
-        default_trial_tg = final_config.get("default_trial_tg")
         pct_gain = ((best - baseline) / baseline * 100) if baseline > 0 else 0.0
+
+        def _safe_bool(value, default=False):
+            if value is None:
+                return default
+            if isinstance(value, str):
+                return value.strip().lower() in ("1", "true", "yes", "on")
+            return bool(value)
+
+        flash_attention = _safe_bool(final_config.get("flash_attention"), False)
+        fit_on = _safe_bool(final_config.get("fit_on"), False)
+        no_mmap = _safe_bool(final_config.get("no_mmap"), self.config.no_mmap) if "no_mmap" in final_config else self.config.no_mmap
+        mlock = _safe_bool(final_config.get("mlock"), self.config.mlock) if "mlock" in final_config else self.config.mlock
+        no_warmup = _safe_bool(final_config.get("no_warmup"), self.config.no_warmup) if "no_warmup" in final_config else self.config.no_warmup
+
+        spec_enabled = _safe_bool(final_config.get("spec_enabled"), self.config.spec_enabled) if "spec_enabled" in final_config else bool(final_config.get("mtp") or final_config.get("draft_model_path") or self.config.spec_enabled)
+        spec_type = final_config.get("spec_type", "draft-mtp" if spec_enabled else self.config.spec_type)
+        spec_draft_n = final_config.get("spec_draft_n", self.config.spec_draft_n_max)
+        spec_draft_p_min = final_config.get("spec_draft_p_min", self.config.spec_draft_p_min)
+        spec_draft_n_min = final_config.get("spec_draft_n_min", self.config.spec_draft_n_min)
+        draft_model_path = final_config.get("draft_model_path", self.config.draft_model_path or "")
+        cache_type_kd = final_config.get("cache_type_kd", self.config.cache_type_kd)
+        cache_type_vd = final_config.get("cache_type_vd", self.config.cache_type_vd)
 
         threads = _safe_int(threads, threads)
         thread_batch = _safe_int(thread_batch, thread_batch)
@@ -1852,8 +1889,48 @@ class LlamaServerGUI:
         micro_batch = _safe_int(micro_batch, micro_batch)
         fitt = _safe_int(fitt, fitt)
 
+        extra_flags = []
+        if flash_attention:
+            extra_flags.append("-fa on")
+        if fit_on:
+            extra_flags.append("--fit on")
+        if no_mmap:
+            extra_flags.append("--no-mmap")
+        if mlock:
+            extra_flags.append("--mlock")
+        if no_warmup:
+            extra_flags.append("--no-warmup")
+        if spec_enabled:
+            extra_flags.append(f"--spec-type {spec_type}")
+            if spec_draft_n:
+                extra_flags.append(f"--spec-draft-n-max {int(spec_draft_n)}")
+            if spec_draft_n_min:
+                extra_flags.append(f"--spec-draft-n-min {int(spec_draft_n_min)}")
+            if spec_draft_p_min:
+                try:
+                    extra_flags.append(f"--spec-draft-p-min {float(spec_draft_p_min):.1f}")
+                except Exception:
+                    pass
+            if draft_model_path:
+                extra_flags.append(f'--model-draft "{draft_model_path}"')
+            if "draft-mtp" in (spec_type or ""):
+                extra_flags.extend([f"-ctkd {cache_type_kd}", f"-ctvd {cache_type_vd}"])
+
+        recommended_flags = " ".join([
+            f"-t {threads}",
+            f"-tb {thread_batch}",
+            f"-b {batch}",
+            f"-ub {micro_batch}",
+            f"-c {ctx}",
+        ] + extra_flags + [
+            f"-fitt {fitt}",
+            f"-ctk {cache_k}",
+            f"-ctv {cache_v}",
+        ])
+
         lines = [
             f"Method:           {method}",
+            f"Context Size:     {ctx}",
             f"Threads:          {threads}",
             f"Thread Batch:     {thread_batch}",
             f"Batch Size:       {batch}",
@@ -1861,68 +1938,97 @@ class LlamaServerGUI:
             f"FITT Target:      {fitt}",
             f"Cache K:          {cache_k}",
             f"Cache V:          {cache_v}",
+            f"Flash Attention:  {'Yes' if flash_attention else 'No'}",
+            f"Fit On:           {'Yes' if fit_on else 'No'}",
+            f"No-MMAP:          {'Yes' if no_mmap else 'No'}",
+            f"MLock:            {'Yes' if mlock else 'No'}",
+            f"No Warmup:        {'Yes' if no_warmup else 'No'}",
+            f"Speculative:      {'Yes' if spec_enabled else 'No'}",
+            f"Spec Type:        {spec_type if spec_enabled else '--'}",
+            f"Spec Draft N Max: {spec_draft_n if spec_enabled else '--'}",
+            f"Spec Draft N Min: {spec_draft_n_min if spec_enabled else '--'}",
+            f"Spec Draft P Min: {spec_draft_p_min if spec_enabled else '--'}",
+            f"Draft Model:      {os.path.basename(draft_model_path) if draft_model_path and spec_enabled else '--'}",
             f"",
             f"Baseline Score:   {baseline:.2f} (base command)",
+            f"Baseline PP:      {baseline_pp:.2f} t/s",
+            f"Baseline TG:      {baseline_tg:.2f} t/s",
             f"Best Score:       {best:.2f}",
             f"Best PP Speed:    {best_pp:.2f} t/s",
             f"Best TG Speed:    {best_tg:.2f} t/s",
             f"Improvement:      {pct_gain:.2f}%",
-        ]
-        if default_trial_score is not None:
-            lines.extend([
-                f"",
-                f"Trial 0:          {default_trial_score} (default config, not base baseline)",
-                f"Trial 0 PP:       {default_trial_pp} t/s",
-                f"Trial 0 TG:       {default_trial_tg} t/s",
-            ])
-        lines.extend([
+            f"",
+            f"Trial 0:          {baseline:.2f} (base command baseline)",
+            f"Trial 0 PP:       {baseline_pp:.2f} t/s",
+            f"Trial 0 TG:       {baseline_tg:.2f} t/s",
             f"",
             "Recommended flags for llama-server:",
-            f"-t {threads} -tb {thread_batch} -b {batch} -ub {micro_batch} "
-            f"-fitt {fitt} -ctk {cache_k} -ctv {cache_v}",
-        ])
+            recommended_flags,
+        ]
         text_area.insert("1.0", "\n".join(lines))
         text_area.configure(state="disabled")
 
+        def _set_config_attr(name, value):
+            if hasattr(self.config, name):
+                setattr(self.config, name, value)
+
+        def _set_var(name, value):
+            try:
+                self._tk[name].set(value)
+            except Exception:
+                pass
+
         def _apply():
-            self.config.threads = threads
-            self.config.thread_batch = thread_batch
-            self.config.batch_size = batch
-            self.config.micro_batch_size = micro_batch
-            self.config.fitt = fitt
-            self.config.cache_type_k = cache_k
-            self.config.cache_type_v = cache_v
-            # Update Tk variables so the command box refreshes
-            try:
-                self._tk["threads_val"].set(threads)
-            except Exception: pass
-            try:
-                self._tk["thread_batch"].set(thread_batch)
-            except Exception: pass
-            try:
-                self._tk["batch_size"].set(batch)
-            except Exception: pass
-            try:
-                self._tk["micro_batch"].set(micro_batch)
-            except Exception: pass
-            try:
-                self._tk["fitt"].set(fitt)
-            except Exception: pass
-            try:
-                self._tk["cache_type_k"].set(cache_k)
-            except Exception: pass
-            try:
-                self._tk["cache_type_v"].set(cache_v)
-            except Exception: pass
+            _set_config_attr("ctx_size_value", ctx)
+            _set_config_attr("threads", threads)
+            _set_config_attr("thread_batch", thread_batch)
+            _set_config_attr("batch_size", batch)
+            _set_config_attr("micro_batch_size", micro_batch)
+            _set_config_attr("fitt", fitt)
+            _set_config_attr("cache_type_k", cache_k)
+            _set_config_attr("cache_type_v", cache_v)
+            _set_config_attr("flash_attention", flash_attention)
+            _set_config_attr("fit_on", fit_on)
+            _set_config_attr("no_mmap", no_mmap)
+            _set_config_attr("mlock", mlock)
+            _set_config_attr("no_warmup", no_warmup)
+            _set_config_attr("spec_enabled", spec_enabled)
+            _set_config_attr("spec_type", spec_type)
+            _set_config_attr("spec_draft_n_max", int(spec_draft_n) if spec_draft_n else 0)
+            _set_config_attr("spec_draft_n_min", int(spec_draft_n_min) if spec_draft_n_min else 0)
+            _set_config_attr("spec_draft_p_min", float(spec_draft_p_min) if spec_draft_p_min else 0.0)
+            _set_config_attr("draft_model_path", draft_model_path if spec_enabled else "")
+            _set_config_attr("cache_type_kd", cache_type_kd)
+            _set_config_attr("cache_type_vd", cache_type_vd)
+
+            _set_var("threads_val", threads)
+            _set_var("thread_batch", thread_batch)
+            _set_var("batch_size", batch)
+            _set_var("micro_batch", micro_batch)
+            _set_var("fitt", fitt)
+            _set_var("cache_type_k", cache_k)
+            _set_var("cache_type_v", cache_v)
+            _set_var("flash_attention", flash_attention)
+            _set_var("fit_on", fit_on)
+            _set_var("no_mmap", no_mmap)
+            _set_var("mlock", mlock)
+            _set_var("no_warmup", no_warmup)
+            _set_var("spec_enabled", spec_enabled)
+            _set_var("spec_ngram", "ngram-mod" in (spec_type or ""))
+            _set_var("spec_draft", "draft-mtp" in (spec_type or ""))
+            _set_var("spec_draft_max", int(spec_draft_n) if spec_draft_n else 0)
+            _set_var("spec_draft_min", int(spec_draft_n_min) if spec_draft_n_min else 0)
+            _set_var("spec_draft_p_min", float(spec_draft_p_min) if spec_draft_p_min else 0.0)
+            _set_var("cache_type_kd", cache_type_kd)
+            _set_var("cache_type_vd", cache_type_vd)
+            if draft_model_path and spec_enabled:
+                self.draft_model_label.config(text="Using: " + os.path.basename(draft_model_path).rsplit(".gguf", 1)[0])
+            self._update_command()
             _close_results_window()
 
         def _copy():
-            import tkinter as tk
-            flags = (f"-t {threads} -tb {thread_batch} -b {batch} "
-                     f"-ub {micro_batch} -c {ctx} -fitt {fitt} "
-                     f"-ctk {cache_k} -ctv {cache_v}")
             self.root.clipboard_clear()
-            self.root.clipboard_append(flags)
+            self.root.clipboard_append(recommended_flags)
 
         btn_frame = ttk.Frame(win)
         btn_frame.pack(fill="x", pady=8)
