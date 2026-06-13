@@ -5,12 +5,14 @@ Uses Optuna (TPE) to search mixed parameter space and wraps
 
 Run as a standalone script for quick tests. Example:
 
-    python bayesian.py --model "path/to/model.gguf" --server llama-server.exe --trials 6
+    python bayesian.py --model "path/to/model.gguf" --server llama-server.exe
 
 If `optuna` is not installed, the script prints instructions to install it.
 """
 
 import argparse
+import csv
+import os
 import time
 
 try:
@@ -22,9 +24,10 @@ import optimiser_script as opt
 
 
 def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
-                              metric_weight=0.1, n_trials=30, avg_runs=1,
+                              metric_weight=0.1, n_trials=40, avg_runs=1,
                               progress_callback=None, cancel_flag=None, proc_holder=None,
-                              mtp=False, draft_model_path=None):
+                              mtp=False, draft_model_path=None, seed=42,
+                              time_budget=None, trial_csv_path=None):
     """Run an Optuna (TPE) search over the same parameter families used by
     `optimiser_script.run_full_optimisation`. Returns a final_config dict
     matching the existing optimiser's returned structure, or None on failure.
@@ -39,6 +42,12 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
 
     is_speculative = mtp or bool(draft_model_path)
 
+    if n_trials <= 0:
+        print("[ERROR] n_trials must be positive.")
+        return None
+
+    start_time = time.time()
+
     # Baseline
     base_pp, base_tg = opt.run_benchmark(
         model_path, server_exe, context_size,
@@ -52,9 +61,12 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
 
     params = opt.build_thread_list()
     threads_choices = params.get("threads") or [max(1, params.get("cap_limit", 1))]
-    thread_batch_choices = params.get("thread_batch") or threads_choices  # -tb, can use 100% threads
+    cap_limit = params.get("cap_limit", 1) or max(1, threads_choices[-1] if threads_choices else 1)
+    threads_choices = [t for t in threads_choices if 1 <= t <= cap_limit] or [max(1, cap_limit)]
+    thread_batch_choices = params.get("thread_batch") or threads_choices
+    thread_batch_choices = [t for t in thread_batch_choices if 1 <= t <= max(1, cap_limit)] or threads_choices
     batch_choices = params.get("batch_sizes", [128, 256, 512, 1024, 2048])
-    micro_batch_choices = params.get("micro_batch_sizes", [128, 256, 512, 1024, 2048])  # -ub, now independent
+    micro_batch_choices = params.get("micro_batch_sizes", [128, 256, 512, 1024, 2048])
     fitt_choices = params.get("fitt_targets", [50])
     cache_k_choices = params.get("cache_k_types", ["f16", "q8_0", "q5_0", "q4_0"])
     cache_v_choices = params.get("cache_v_types", ["f16", "q8_0", "q5_0", "q4_0"])
@@ -62,32 +74,68 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
     
     study = optuna.create_study(
         direction="maximize",
-        sampler=optuna.samplers.TPESampler(n_startup_trials=9)
-        )
+        sampler=optuna.samplers.TPESampler(
+            seed=seed,
+            n_startup_trials=min(9, max(1, n_trials // 3)),
+        ),
+    )
     
+    trial_log = None
+    if trial_csv_path:
+        os.makedirs(os.path.dirname(os.path.abspath(trial_csv_path)), exist_ok=True)
+        trial_log = open(trial_csv_path, "w", newline="", encoding="utf-8")
+
+    csv_fieldnames = [
+        "number", "state", "value", "pp", "tg", "best_value", "error",
+        "param_threads", "param_thread_batch", "param_batch", "param_micro_batch",
+        "param_fitt", "param_cache_k", "param_cache_v",
+    ]
+    if is_speculative:
+        csv_fieldnames += ["param_spec_draft_n", "param_spec_draft_p_min"]
+
     # Early stopping: track consecutive trials without improvement
     early_stop_state = {"best_value": None, "no_improve_count": 0}
 
     def callback(study, trial):
-        """Called after each trial completes. Stop if 10 consecutive trials show no improvement."""
+        """Called after each trial completes. Stop on time budget or no-improve streak."""
         try:
             current_best = study.best_value
-        except ValueError:
-            return
+            display_best = current_best if current_best is not None else baseline_score
 
-        if early_stop_state["best_value"] is None:
-            early_stop_state["best_value"] = current_best
-            early_stop_state["no_improve_count"] = 0
-        elif current_best > early_stop_state["best_value"]:
-            # Improvement found
-            early_stop_state["best_value"] = current_best
-            early_stop_state["no_improve_count"] = 0
-        else:
-            # No improvement
-            early_stop_state["no_improve_count"] += 1
-            if early_stop_state["no_improve_count"] >= 15:
-                print(f"[INFO] Early stopping: 15 consecutive trials without improvement.")
+            if time_budget and (time.time() - start_time) >= time_budget:
+                print(f"[INFO] Early stopping: time budget reached ({time_budget:.0f}s).")
                 study.stop()
+
+            if early_stop_state["best_value"] is None:
+                early_stop_state["best_value"] = current_best
+                early_stop_state["no_improve_count"] = 0
+            elif current_best is not None and current_best > early_stop_state["best_value"]:
+                early_stop_state["best_value"] = current_best
+                early_stop_state["no_improve_count"] = 0
+            elif current_best is not None:
+                early_stop_state["no_improve_count"] += 1
+                if early_stop_state["no_improve_count"] >= 15:
+                    print("[INFO] Early stopping: 15 consecutive trials without improvement.")
+                    study.stop()
+
+            if trial_log:
+                row = {
+                    "number": trial.number,
+                    "state": trial.state.name,
+                    "value": trial.value,
+                    "pp": trial.user_attrs.get("pp"),
+                    "tg": trial.user_attrs.get("tg"),
+                    "best_value": display_best,
+                    "error": trial.user_attrs.get("error"),
+                }
+                row.update({f"param_{k}": v for k, v in trial.params.items()})
+                writer = csv.DictWriter(trial_log, fieldnames=csv_fieldnames, extrasaction="ignore")
+                if trial_log.tell() == 0:
+                    writer.writeheader()
+                writer.writerow(row)
+                trial_log.flush()
+        except Exception as e:
+            print(f"[DEBUG] Bayesian callback failed: {e}")
 
     def objective(trial):
         if cancel_flag and cancel_flag[0]:
@@ -96,22 +144,30 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         t = trial.suggest_categorical("threads", threads_choices)
         tb = trial.suggest_categorical("thread_batch", thread_batch_choices)
         b = trial.suggest_categorical("batch", batch_choices)
-        ub = trial.suggest_categorical("micro_batch", micro_batch_choices)
+        ub_candidate = trial.suggest_categorical("micro_batch", micro_batch_choices)
+        ub = min(ub_candidate, b)
         fitt = trial.suggest_categorical("fitt", fitt_choices)
         ck = trial.suggest_categorical("cache_k", cache_k_choices)
         cv = trial.suggest_categorical("cache_v", cache_v_choices)
         sdn = trial.suggest_int("spec_draft_n", min(spec_draft_n_choices), max(spec_draft_n_choices)) if is_speculative else None
         sdp = trial.suggest_float("spec_draft_p_min", 0.1, 0.9, step=0.1) if is_speculative else None
 
-        pp, tg = opt.run_benchmark(
-            model_path, server_exe, context_size,
-            proc_holder=proc_holder,
-            t=t, tb=tb, b=b, ub=ub, fitt=fitt,
-            cache_k=ck, cache_v=cv,
-            mtp=is_speculative, spec_draft_n=sdn,
-            avg_runs=avg_runs, draft_model_path=draft_model_path,
-            spec_draft_p_min=sdp
-        )
+        try:
+            pp, tg = opt.run_benchmark(
+                model_path, server_exe, context_size,
+                proc_holder=proc_holder,
+                t=t, tb=tb, b=b, ub=ub, fitt=fitt,
+                cache_k=ck, cache_v=cv,
+                mtp=is_speculative, spec_draft_n=sdn,
+                avg_runs=avg_runs, draft_model_path=draft_model_path,
+                spec_draft_p_min=sdp
+            )
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            print(f"[DEBUG] Benchmark failed: {e}")
+            trial.set_user_attr("error", str(e))
+            return float("-inf")
         score = opt.calculate_score(pp, tg, metric_weight)
 
         # Save prompt processing and text generation speeds to avoid a final verification run
@@ -126,16 +182,17 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         if progress_callback:
             progress_callback(trial.number + 1, n_trials, f"Trial-{trial.number+1}", score, best, baseline_score)
 
-        # If measurement failed, return a low score
+        # If measurement failed, reject trial.
         if pp == 0 and tg == 0:
-            return -1.0
+            trial.set_user_attr("error", "benchmark returned zero speed")
+            return float("-inf")
         return score
 
     # Warm-start with a sensible baseline configuration
     default_threads = threads_choices[-1] if threads_choices else max(1, params.get("cap_limit", 1))
     default_tb = thread_batch_choices[-1] if thread_batch_choices else default_threads
     default_b = 512 if 512 in batch_choices else batch_choices[0]
-    default_ub = 512 if 512 in micro_batch_choices else micro_batch_choices[0]
+    default_ub = min(default_b, 512 if 512 in micro_batch_choices else micro_batch_choices[0])
     default_fitt = fitt_choices[0]
     default_ck = "f16" if "f16" in cache_k_choices else cache_k_choices[0]
     default_cv = "f16" if "f16" in cache_v_choices else cache_v_choices[0]
@@ -164,15 +221,21 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         print("[INFO] Study interrupted by user.")
     except optuna.TrialPruned:
         print("[INFO] Study pruned/cancelled.")
+    finally:
+        if trial_log:
+            trial_log.close()
 
-    if study.best_trial is None:
+    successful_trials = [
+        trial for trial in study.trials
+        if trial.value is not None and trial.value > float("-inf")
+    ]
+    if not successful_trials:
         print("[INFO] No successful trials completed.")
         return None
 
-    best_params = study.best_trial.params
-    best_score = study.best_value
-    best_pp = study.best_trial.user_attrs.get("pp", 0.0)
-    best_tg = study.best_trial.user_attrs.get("tg", 0.0)
+    best_trial = max(successful_trials, key=lambda trial: trial.value)
+    best_params = best_trial.params
+    best_score = best_trial.value
 
     final_config = {
         "threads": best_params["threads"],
@@ -184,12 +247,12 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         "cache_v": best_params["cache_v"],
         "mtp": is_speculative,
         "spec_draft_n": best_params.get("spec_draft_n") if is_speculative else None,
-        "spec_draft_p_min": best_params.get("spec_draft_p_min.2") if is_speculative else None,
+        "spec_draft_p_min": best_params.get("spec_draft_p_min") if is_speculative else None,
         "draft_model_path": draft_model_path,
         "baseline_score": f"{baseline_score:.2f}",
         "best_score": f"{best_score:.2f}",
-        "best_pp": f"{best_pp:.2f}",
-        "best_tg": f"{best_tg:.2f}",
+        "best_pp": f"{best_trial.user_attrs.get('pp', 0.0):.2f}",
+        "best_tg": f"{best_trial.user_attrs.get('tg', 0.0):.2f}",
     }
     return final_config
 
@@ -207,6 +270,9 @@ def main():
     parser.add_argument("--avg", type=int, default=1, help="Average runs per trial to reduce noise")
     parser.add_argument("--mtp", action="store_true", help="Enable multi-token prediction (MTP) optimization; requires MTP-capable model")
     parser.add_argument("--draft", default=None, help="Path to separate draft model GGUF for speculative decoding")
+    parser.add_argument("--seed", type=int, default=42, help="Optuna sampler seed")
+    parser.add_argument("--time-budget", type=float, default=None, help="Stop after N seconds; current trial may finish first")
+    parser.add_argument("--trial-csv", default=None, help="Write completed trial params/results to CSV")
     args = parser.parse_args()
 
     if optuna is None:
@@ -222,7 +288,8 @@ def main():
     final = run_bayesian_optimisation(
         args.model, args.server, context_size=args.context,
         metric_weight=0.5, n_trials=args.trials, avg_runs=args.avg,
-        progress_callback=_print_progress, mtp=args.mtp, draft_model_path=args.draft
+        progress_callback=_print_progress, mtp=args.mtp, draft_model_path=args.draft,
+        seed=args.seed, time_budget=args.time_budget, trial_csv_path=args.trial_csv
     )
     elapsed = time.time() - start
     if final:
