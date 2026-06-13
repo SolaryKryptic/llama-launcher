@@ -71,6 +71,8 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
     fitt_choices = params.get("fitt_targets", [50])
     cache_k_choices = params.get("cache_k_types", ["f16", "q8_0", "q5_0", "q4_0"])
     cache_v_choices = params.get("cache_v_types", ["f16", "q8_0", "q5_0", "q4_0"])
+    cache_kd_choices = cache_k_choices if is_speculative else None
+    cache_vd_choices = cache_v_choices if is_speculative else None
     spec_draft_n_choices = params.get("spec_draft_n", list(range(1, 5))) if is_speculative else None
 
     def next_higher_thread_batch(current_t):
@@ -99,7 +101,7 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         "param_fitt", "param_cache_k", "param_cache_v",
     ]
     if is_speculative:
-        csv_fieldnames += ["param_spec_draft_n", "param_spec_draft_p_min"]
+        csv_fieldnames += ["param_spec_draft_n", "param_spec_draft_p_min", "param_cache_kd", "param_cache_vd"]
 
     # Early stopping: track consecutive trials without improvement
     early_stop_state = {"best_value": None, "no_improve_count": 0}
@@ -168,6 +170,8 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         fitt = trial.suggest_categorical("fitt", fitt_choices)
         ck = trial.suggest_categorical("cache_k", cache_k_choices)
         cv = trial.suggest_categorical("cache_v", cache_v_choices)
+        ckd = trial.suggest_categorical("cache_kd", cache_kd_choices) if is_speculative else None
+        cvd = trial.suggest_categorical("cache_vd", cache_vd_choices) if is_speculative else None
         sdn = trial.suggest_categorical("spec_draft_n", spec_draft_n_choices) if is_speculative else None
         sdp = trial.suggest_float("spec_draft_p_min", 0.0, 0.7, step=0.1) if is_speculative else None
 
@@ -177,10 +181,15 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
             "micro_batch": ub, "fitt": fitt, "cache_k": ck, "cache_v": cv,
         }
         if is_speculative:
+            effective_params["cache_kd"] = ckd
+            effective_params["cache_vd"] = cvd
             effective_params["spec_draft_n"] = sdn
             effective_params["spec_draft_p_min"] = round(sdp, 1) if sdp is not None else None
         baseline_effective = dict(baseline_trial)
         baseline_effective["thread_batch"] = next_higher_thread_batch(baseline_trial["threads"])
+        if is_speculative:
+            baseline_effective["cache_kd"] = baseline_trial["cache_kd"]
+            baseline_effective["cache_vd"] = baseline_trial["cache_vd"]
         trial_role = "default_config" if all(effective_params.get(k) == v for k, v in baseline_effective.items()) else "trial"
         trial.set_user_attr("trial_role", trial_role)
 
@@ -196,6 +205,7 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
                         proc_holder=proc_holder,
                         t=t, tb=tb, b=b, ub=ub, fitt=fitt,
                         cache_k=ck, cache_v=cv,
+                        cache_kd=ckd, cache_vd=cvd,
                         mtp=is_speculative, spec_draft_n=sdn,
                         avg_runs=avg_runs, draft_model_path=draft_model_path,
                         spec_draft_p_min=sdp
@@ -251,6 +261,8 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
     default_fitt = fitt_choices[0]
     default_ck = "f16" if "f16" in cache_k_choices else cache_k_choices[0]
     default_cv = "f16" if "f16" in cache_v_choices else cache_v_choices[0]
+    default_cache_kd = ("f16" if "f16" in cache_kd_choices else cache_kd_choices[0]) if is_speculative else None
+    default_cache_vd = ("f16" if "f16" in cache_vd_choices else cache_vd_choices[0]) if is_speculative else None
 
     baseline_trial = {
         "threads": default_threads,
@@ -261,6 +273,9 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         "cache_k": default_ck,
         "cache_v": default_cv,
     }
+    if is_speculative:
+        baseline_trial["cache_kd"] = default_cache_kd
+        baseline_trial["cache_vd"] = default_cache_vd
     if is_speculative and spec_draft_n_choices:
         baseline_trial["spec_draft_n"] = 4 if 4 in spec_draft_n_choices else spec_draft_n_choices[0]
         baseline_trial["spec_draft_p_min"] = 0.4
@@ -327,6 +342,11 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         "best_pp": f"{best_trial.user_attrs.get('pp', 0.0):.2f}",
         "best_tg": f"{best_trial.user_attrs.get('tg', 0.0):.2f}",
     }
+    if is_speculative:
+        final_config.update({
+            "cache_type_kd": best_params.get("cache_kd", "f16"),
+            "cache_type_vd": best_params.get("cache_vd", "f16"),
+        })
     if default_trial is not None:
         final_config["default_trial_score"] = f"{default_trial.value:.2f}"
         final_config["default_trial_pp"] = f"{default_trial.user_attrs.get('pp', 0.0):.2f}"

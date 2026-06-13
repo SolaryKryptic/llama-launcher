@@ -21,6 +21,7 @@ class OptimisationRequest:
     metric_weight: float = 0.5
     method: str = METHOD_BAYESIAN
     draft_model_path: Optional[str] = None
+    mtp: bool = False
     trials: int = 40
     avg_runs: int = 1
     seed: int = 42
@@ -60,6 +61,7 @@ class OptimisationService:
             cancel_flag=cancel_flag,
             proc_holder=proc_holder,
             draft_model_path=request.draft_model_path,
+            mtp=request.mtp,
         )
 
     def _run_bayesian(self, request, progress_callback, cancel_flag, proc_holder):
@@ -76,6 +78,7 @@ class OptimisationService:
             cancel_flag=cancel_flag,
             proc_holder=proc_holder,
             draft_model_path=request.draft_model_path,
+            mtp=request.mtp,
             seed=request.seed,
             time_budget=request.time_budget,
             trial_csv_path=request.trial_csv_path,

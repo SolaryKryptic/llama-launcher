@@ -1926,8 +1926,11 @@ class LlamaServerGUI:
             f"Thread Batch:     {thread_batch}",
             f"Batch Size:       {batch}",
             f"Micro-Batch:      {micro_batch}",
+            f"FITT Target:      {fitt}",
             f"Cache K:          {cache_k}",
             f"Cache V:          {cache_v}",
+            f"Cache Kd:         {cache_type_kd if spec_enabled and 'draft-mtp' in (spec_type or '') else '--'}",
+            f"Cache Vd:         {cache_type_vd if spec_enabled and 'draft-mtp' in (spec_type or '') else '--'}",
             f"Speculative:      {'Yes' if spec_enabled else 'No'}",
             f"Spec Type:        {spec_type if spec_enabled else '--'}",
             f"Spec Draft N Max: {spec_draft_n if spec_enabled else '--'}",
@@ -2093,8 +2096,10 @@ class LlamaServerGUI:
             return
 
         draft_path = None
+        mtp_enabled = False
         if self.config.spec_enabled:
             draft_path = self.config.draft_model_path.strip() if self.config.draft_model_path else None
+            mtp_enabled = "draft-mtp" in (self.config.spec_type or "")
 
         request = OptimisationRequest(
             model_path=model_path,
@@ -2103,6 +2108,7 @@ class LlamaServerGUI:
             metric_weight=cfg["metric_weight"],
             method=cfg["method"],
             draft_model_path=draft_path,
+            mtp=mtp_enabled,
             trials=cfg["trials"],
             avg_runs=cfg["avg_runs"],
             seed=cfg["seed"],

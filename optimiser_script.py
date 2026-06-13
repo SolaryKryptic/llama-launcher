@@ -100,12 +100,13 @@ def port_is_free(port):
 
 
 def build_server_flags(context_size, t=None, tb=None, b=None, ub=None, fitt=None,
-                       cache_k="f16", cache_v="f16", no_mmap=False, is_base=False,
+                       cache_k="f16", cache_v="f16", cache_kd="f16", cache_vd="f16",
+                       no_mmap=False, is_base=False,
                        mtp=False, spec_draft_n=None, draft_model_path=None, spec_draft_p_min=None):
     flags = [
         "-c", str(context_size),
         "--port", str(BENCH_PORT),
-        "-lv", "3",
+        "-lv", "4",
         "--host", "127.0.0.1",
         "-np", "1",
         "--no-warmup",
@@ -129,6 +130,8 @@ def build_server_flags(context_size, t=None, tb=None, b=None, ub=None, fitt=None
             "-ctk", str(cache_k),
             "-ctv", str(cache_v),
         ]
+        if mtp or draft_model_path:
+            flags += ["-ctkd", str(cache_kd), "-ctvd", str(cache_vd)]
         if tb is not None:
             flags += ["-tb", str(tb)]
         if spec_draft_n is not None:
@@ -251,6 +254,7 @@ def parse_completion_results(response):
 
 def run_benchmark(model_path, server_exe, context_size, proc_holder=None,
                   t=None, tb=None, b=None, ub=None, fitt=None, cache_k="f16", cache_v="f16",
+                  cache_kd="f16", cache_vd="f16",
                   no_mmap=False, is_base=False, avg_runs=1, mtp=False, spec_draft_n=None,
                   draft_model_path=None, spec_draft_p_min=None):
     """Start llama-server, run benchmark, stop server. Returns (pp_tps, tg_tps)."""
@@ -271,6 +275,7 @@ def run_benchmark(model_path, server_exe, context_size, proc_holder=None,
             proc_holder=proc_holder,
             t=t, tb=tb, b=b, ub=ub, fitt=fitt,
             cache_k=cache_k, cache_v=cache_v,
+            cache_kd=cache_kd, cache_vd=cache_vd,
             no_mmap=no_mmap, is_base=is_base,
             mtp=mtp, spec_draft_n=spec_draft_n,
             draft_model_path=draft_model_path,
@@ -318,7 +323,7 @@ def run_benchmark(model_path, server_exe, context_size, proc_holder=None,
 
 def run_full_optimisation(model_path, server_exe, context_size=16384, metric_weight=0.5,
                           progress_callback=None, cancel_flag=None, proc_holder=None,
-                          draft_model_path=None):
+                          draft_model_path=None, mtp=False):
     """Run full two-stage sequential greedy + neighbourhood optimisation using llama-server."""
     if cancel_flag is None:
         cancel_flag = [False]
@@ -332,8 +337,13 @@ def run_full_optimisation(model_path, server_exe, context_size=16384, metric_wei
         fitt_list     = params["fitt_targets"]
         cache_k_types = params["cache_k_types"]
         cache_v_types = params["cache_v_types"]
+        spec_active = bool(mtp or draft_model_path)
+        cache_kd_types = cache_k_types if spec_active else None
+        cache_vd_types = cache_v_types if spec_active else None
 
         stage1_total = len(threads_list) + len(batch_list) + len(fitt_list) + len(cache_k_types) + len(cache_v_types)
+        if spec_active:
+            stage1_total += len(cache_kd_types) + len(cache_vd_types)
         neighbourhood_estimate = 6
         total_runs = stage1_total + neighbourhood_estimate
         run_idx = [0]
@@ -364,6 +374,8 @@ def run_full_optimisation(model_path, server_exe, context_size=16384, metric_wei
         best_fitt    = fitt_list[0]
         best_cache_k = cache_k_types[0]
         best_cache_v = cache_v_types[0]
+        best_cache_kd = "f16"
+        best_cache_vd = "f16"
         global_best  = baseline_score
         global_best_pp = base_pp
         global_best_tg = base_tg
@@ -374,7 +386,8 @@ def run_full_optimisation(model_path, server_exe, context_size=16384, metric_wei
             if cancel_flag[0]: return None
             pp, tg, score = bench(f"Threads={t}", global_best, baseline_score,
                                   t=t, b=best_batch, fitt=best_fitt,
-                                  cache_k=best_cache_k, cache_v=best_cache_v)
+                                  cache_k=best_cache_k, cache_v=best_cache_v,
+                                  cache_kd=best_cache_kd, cache_vd=best_cache_vd)
             if score > stage1_step_best:
                 stage1_step_best = score
                 best_threads = t
@@ -389,7 +402,8 @@ def run_full_optimisation(model_path, server_exe, context_size=16384, metric_wei
             if cancel_flag[0]: return None
             pp, tg, score = bench(f"Batch={b}", global_best, baseline_score,
                                   t=best_threads, b=b, fitt=best_fitt,
-                                  cache_k=best_cache_k, cache_v=best_cache_v)
+                                  cache_k=best_cache_k, cache_v=best_cache_v,
+                                  cache_kd=best_cache_kd, cache_vd=best_cache_vd)
             if score > stage1_step_best:
                 stage1_step_best = score
                 best_batch = b
@@ -408,7 +422,8 @@ def run_full_optimisation(model_path, server_exe, context_size=16384, metric_wei
             if cancel_flag[0]: return None
             pp, tg, score = bench(f"FITT={fitt}", global_best, baseline_score,
                                   t=best_threads, b=best_batch, fitt=fitt,
-                                  cache_k=best_cache_k, cache_v=best_cache_v)
+                                  cache_k=best_cache_k, cache_v=best_cache_v,
+                                  cache_kd=best_cache_kd, cache_vd=best_cache_vd)
             if score > stage1_step_best:
                 stage1_step_best = score
                 best_fitt = fitt
@@ -422,7 +437,8 @@ def run_full_optimisation(model_path, server_exe, context_size=16384, metric_wei
             if cancel_flag[0]: return None
             pp, tg, score = bench(f"CacheK={ck}", global_best, baseline_score,
                                   t=best_threads, b=best_batch, fitt=best_fitt,
-                                  cache_k=ck, cache_v=best_cache_v)
+                                  cache_k=ck, cache_v=best_cache_v,
+                                  cache_kd=best_cache_kd, cache_vd=best_cache_vd)
             if score > stage1_step_best:
                 stage1_step_best = score
                 best_cache_k = ck
@@ -436,13 +452,45 @@ def run_full_optimisation(model_path, server_exe, context_size=16384, metric_wei
             if cancel_flag[0]: return None
             pp, tg, score = bench(f"CacheV={cv}", global_best, baseline_score,
                                   t=best_threads, b=best_batch, fitt=best_fitt,
-                                  cache_k=best_cache_k, cache_v=cv)
+                                  cache_k=best_cache_k, cache_v=cv,
+                                  cache_kd=best_cache_kd, cache_vd=best_cache_vd)
             if score > stage1_step_best:
                 stage1_step_best = score
                 best_cache_v = cv
             if score > global_best:
                 global_best = score
                 global_best_pp, global_best_tg = pp, tg
+
+        if spec_active:
+            # Step 1.6 — Kd Cache type
+            stage1_step_best = -1.0
+            for ckd in cache_kd_types:
+                if cancel_flag[0]: return None
+                pp, tg, score = bench(f"CacheKd={ckd}", global_best, baseline_score,
+                                      t=best_threads, b=best_batch, fitt=best_fitt,
+                                      cache_k=best_cache_k, cache_v=best_cache_v,
+                                      cache_kd=ckd, cache_vd=best_cache_vd)
+                if score > stage1_step_best:
+                    stage1_step_best = score
+                    best_cache_kd = ckd
+                if score > global_best:
+                    global_best = score
+                    global_best_pp, global_best_tg = pp, tg
+
+            # Step 1.7 — Vd Cache type
+            stage1_step_best = -1.0
+            for cvd in cache_vd_types:
+                if cancel_flag[0]: return None
+                pp, tg, score = bench(f"CacheVd={cvd}", global_best, baseline_score,
+                                      t=best_threads, b=best_batch, fitt=best_fitt,
+                                      cache_k=best_cache_k, cache_v=best_cache_v,
+                                      cache_kd=best_cache_kd, cache_vd=cvd)
+                if score > stage1_step_best:
+                    stage1_step_best = score
+                    best_cache_vd = cvd
+                if score > global_best:
+                    global_best = score
+                    global_best_pp, global_best_tg = pp, tg
 
         # ---- Stage 2 — Neighbourhood verification ----
         b_neighbors    = get_neighbors(best_batch, batch_list)
@@ -458,8 +506,8 @@ def run_full_optimisation(model_path, server_exe, context_size=16384, metric_wei
             "fitt": best_fitt,
             "cache_k": best_cache_k,
             "cache_v": best_cache_v,
-            "spec_enabled": bool(draft_model_path),
-            "spec_type": "draft-mtp" if draft_model_path else "",
+            "spec_enabled": spec_active,
+            "spec_type": "draft-mtp" if spec_active else "",
             "draft_model_path": draft_model_path or "",
             "flash_attention": True,
             "fit_on": True,
@@ -470,6 +518,11 @@ def run_full_optimisation(model_path, server_exe, context_size=16384, metric_wei
             "best_pp": global_best_pp,
             "best_tg": global_best_tg,
         }
+        if spec_active:
+            final_config.update({
+                "cache_type_kd": best_cache_kd,
+                "cache_type_vd": best_cache_vd,
+            })
 
         for b, fitt in grid:
             if b == best_batch and fitt == best_fitt:
@@ -477,7 +530,8 @@ def run_full_optimisation(model_path, server_exe, context_size=16384, metric_wei
             if cancel_flag[0]: return None
             pp, tg, score = bench(f"Verify B={b} FITT={fitt}", final_best_score, baseline_score,
                                   t=best_threads, b=b, fitt=fitt,
-                                  cache_k=best_cache_k, cache_v=best_cache_v)
+                                  cache_k=best_cache_k, cache_v=best_cache_v,
+                                  cache_kd=best_cache_kd, cache_vd=best_cache_vd)
             if score > final_best_score:
                 final_best_score = score
                 final_config = {
@@ -488,8 +542,8 @@ def run_full_optimisation(model_path, server_exe, context_size=16384, metric_wei
                     "fitt": fitt,
                     "cache_k": best_cache_k,
                     "cache_v": best_cache_v,
-                    "spec_enabled": bool(draft_model_path),
-                    "spec_type": "draft-mtp" if draft_model_path else "",
+                    "spec_enabled": spec_active,
+                    "spec_type": "draft-mtp" if spec_active else "",
                     "draft_model_path": draft_model_path or "",
                     "flash_attention": True,
                     "fit_on": True,
@@ -500,6 +554,11 @@ def run_full_optimisation(model_path, server_exe, context_size=16384, metric_wei
                     "best_pp": pp,
                     "best_tg": tg,
                 }
+                if spec_active:
+                    final_config.update({
+                        "cache_type_kd": best_cache_kd,
+                        "cache_type_vd": best_cache_vd,
+                    })
 
         return final_config
     finally:
