@@ -59,9 +59,7 @@ Point-and-click interface to configure and generate `llama-server` command-line 
 
 - Python 3.10+ recommended
 - Windows (hardware scanner uses WMI / PowerShell)
-- `llama.cpp` built with `llama-server.exe` available
-- `requests`
-- `optuna` required for optimisation
+- `llama.cpp` built with `llama-server.exe` and `llama-perplexity.exe` available
 
 ## Usage
 
