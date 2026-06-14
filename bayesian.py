@@ -130,13 +130,8 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
     if is_speculative:
         csv_fieldnames += ["param_spec_draft_n", "param_spec_draft_p_min", "param_cache_kd", "param_cache_vd"]
 
-    # Early stopping: track consecutive trials without improvement
-    early_stop_state = {"best_value": None, "no_improve_count": 0}
-
-    n_startup = min(25, max(15, n_trials // 4))
-
     def callback(study, trial):
-        """Called after each trial completes. Stop on time budget or no-improve streak"""
+        """Called after each trial completes. Stop on time budget only."""
         try:
             current_best = best_quality_score
             display_best = current_best
@@ -144,19 +139,6 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
             if time_budget and (time.time() - start_time) >= time_budget:
                 print(f"[INFO] Early stopping: time budget reached ({time_budget:.0f}s).")
                 study.stop()
-
-            if early_stop_state["best_value"] is None:
-                early_stop_state["best_value"] = current_best
-                early_stop_state["no_improve_count"] = 0
-            elif current_best is not None and current_best > early_stop_state["best_value"]:
-                early_stop_state["best_value"] = current_best
-                early_stop_state["no_improve_count"] = 0
-            elif current_best is not None:
-                early_stop_state["no_improve_count"] += 1
-                past_startup = len([t for t in study.trials if t.value is not None]) > n_startup
-                if past_startup and early_stop_state["no_improve_count"] >= 15:
-                    print("[INFO] Early stopping: 15 consecutive trials without improvement.")
-                    study.stop()
 
             if trial_log:
                 trial_role = trial.user_attrs.get("trial_role", "trial")
