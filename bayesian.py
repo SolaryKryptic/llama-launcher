@@ -105,6 +105,12 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
             if choice > current_t:
                 return choice
         return max(thread_batch_choices)
+
+    def choose_thread_batch(raw_tb, current_t):
+        valid_choices = [choice for choice in sorted(set(thread_batch_choices)) if choice >= current_t]
+        if not valid_choices:
+            return max(thread_batch_choices)
+        return min(valid_choices, key=lambda choice: abs(choice - raw_tb))
     
     study = optuna.create_study(
         direction="maximize",
@@ -123,7 +129,7 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         "number", "state", "value", "pp", "tg", "best_quality_score", "error",
         "discarded_by", "perplexity", "ppl_validated", "ppl_skipped_reason",
         "ppl_cache_k", "ppl_cache_v", "ppl_cache_kd", "ppl_cache_vd",
-        "trial_role", "effective_thread_batch",
+        "trial_role", "effective_thread_batch", "raw_thread_batch",
         "param_threads", "param_thread_batch", "param_batch", "param_micro_batch",
         "param_fitt", "param_cache_k", "param_cache_v",
     ]
@@ -161,6 +167,7 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
                     "ppl_cache_vd": trial.user_attrs.get("ppl_cache_vd"),
                     "trial_role": trial_role,
                     "effective_thread_batch": trial.user_attrs.get("thread_batch_effective"),
+                    "raw_thread_batch": trial.user_attrs.get("thread_batch_raw"),
                 }
                 row.update({f"param_{k}": v for k, v in trial.params.items()})
                 writer = csv.DictWriter(trial_log, fieldnames=csv_fieldnames, extrasaction="ignore")
@@ -177,10 +184,9 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
             raise optuna.TrialPruned()
 
         t = trial.suggest_categorical("threads", threads_choices)
-        tb_candidate = trial.suggest_categorical("thread_batch", thread_batch_choices)
-        # Clamp: thread_batch must be >= threads; pick the next valid choice above t
-        tb = tb_candidate if tb_candidate >= t else next_higher_thread_batch(t)
-        trial.set_user_attr("thread_batch_candidate", tb_candidate)
+        raw_tb = trial.suggest_int("thread_batch", min(thread_batch_choices), max(thread_batch_choices))
+        tb = choose_thread_batch(raw_tb, t)
+        trial.set_user_attr("thread_batch_raw", raw_tb)
         trial.set_user_attr("thread_batch_effective", tb)
         b = trial.suggest_categorical("batch", batch_choices)
         ub_candidate = trial.suggest_categorical("micro_batch", micro_batch_choices)
@@ -204,7 +210,6 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
             effective_params["spec_draft_n"] = sdn
             effective_params["spec_draft_p_min"] = round(sdp, 1) if sdp is not None else None
         baseline_effective = dict(baseline_trial)
-        baseline_effective["thread_batch"] = next_higher_thread_batch(baseline_trial["threads"])
         if is_speculative:
             baseline_effective["cache_kd"] = baseline_trial["cache_kd"]
             baseline_effective["cache_vd"] = baseline_trial["cache_vd"]
@@ -273,6 +278,12 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         trial.set_user_attr("pp", pp)
         trial.set_user_attr("tg", tg)
 
+        def update_best_quality(last_score):
+            nonlocal best_quality_score, best_quality_trial
+            if last_score > best_quality_score:
+                best_quality_score = last_score
+                best_quality_trial = trial
+
         def report_progress(last_score):
             if progress_callback:
                 step_name = "DefaultConfig" if trial_role == "default_config" else f"Trial-{trial.number+1}"
@@ -280,8 +291,10 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
 
         step_name = "DefaultConfig" if trial_role == "default_config" else f"Trial-{trial.number+1}"
         if not cache_quant_changed:
-            trial.set_user_attr("ppl_skipped_reason", "baseline_cache")
-            print(f"[INFO] {step_name} matches baseline cache quantisation; skipping PPL benchmark.")
+            trial.set_user_attr("ppl_skipped_reason", "cache_matches_baseline")
+            trial.set_user_attr("ppl_validated", True)
+            print(f"[INFO] {step_name} matches baseline cache quantisation; skipping PPL benchmark and allowing score to update best_quality_score.")
+            update_best_quality(score)
             report_progress(score)
             return score
 
@@ -321,8 +334,7 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
             report_progress(score)
             raise optuna.TrialPruned(f"perplexity_gate: score {score:.2f}")
 
-        best_quality_score = score
-        best_quality_trial = trial
+        update_best_quality(score)
         report_progress(score)
         return score
 
