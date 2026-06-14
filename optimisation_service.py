@@ -6,9 +6,42 @@ their own scripts and are wired here
 
 from dataclasses import dataclass, asdict
 from typing import Any, Callable, Dict, Optional
+import os
+import shutil
+import sys
 
 
-DEFAULT_PERPLEXITY_FILE = "perplexity_corpus.txt"
+DEFAULT_PERPLEXITY_FILE = "Moby Dick.txt"
+
+
+def get_exe_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def get_bundle_dir():
+    if getattr(sys, "frozen", False):
+        return getattr(sys, "_MEIPASS", get_exe_dir())
+    return get_exe_dir()
+
+
+def resolve_perplexity_file(corpus_file=None):
+    corpus_file = corpus_file or DEFAULT_PERPLEXITY_FILE
+    if os.path.isabs(corpus_file):
+        return corpus_file
+    return os.path.join(get_exe_dir(), corpus_file)
+
+
+def ensure_default_perplexity_file():
+    dest = os.path.join(get_exe_dir(), DEFAULT_PERPLEXITY_FILE)
+    if os.path.isfile(dest):
+        return dest
+    source = os.path.join(get_bundle_dir(), DEFAULT_PERPLEXITY_FILE)
+    if os.path.exists(source) and os.path.isfile(source):
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copyfile(source, dest)
+    return dest
 
 
 METHOD_BAYESIAN = "bayesian"

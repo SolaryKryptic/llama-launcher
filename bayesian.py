@@ -227,6 +227,16 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
             "cache_vd": cvd,
         }
 
+        def penalized_failure_score(raw_score=None):
+            if raw_score is None:
+                return -1_000_000.0
+            return -1_000_000.0 + raw_score
+
+        def report_progress(last_score):
+            if progress_callback:
+                step_name = "DefaultConfig" if trial_role == "default_config" else f"Trial-{trial.number+1}"
+                progress_callback(trial.number + 1, n_trials, step_name, last_score, best_quality_score, baseline_score)
+
         def benchmark_with_retry():
             last_error = None
             for attempt in range(1, 4):
@@ -267,8 +277,11 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
 
         pp, tg, bench_error = benchmark_with_retry()
         if bench_error:
+            failure_score = penalized_failure_score()
             trial.set_user_attr("error", bench_error)
-            raise optuna.TrialPruned(bench_error)
+            trial.set_user_attr("discarded_by", "benchmark_failure")
+            report_progress(failure_score)
+            return failure_score
 
         score = opt.calculate_score(pp, tg, metric_weight)
         step_name = "DefaultConfig" if trial_role == "default_config" else f"Trial-{trial.number+1}"
@@ -283,11 +296,6 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
             if last_score > best_quality_score:
                 best_quality_score = last_score
                 best_quality_trial = trial
-
-        def report_progress(last_score):
-            if progress_callback:
-                step_name = "DefaultConfig" if trial_role == "default_config" else f"Trial-{trial.number+1}"
-                progress_callback(trial.number + 1, n_trials, step_name, last_score, best_quality_score, baseline_score)
 
         step_name = "DefaultConfig" if trial_role == "default_config" else f"Trial-{trial.number+1}"
         if not cache_quant_changed:
@@ -305,18 +313,24 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
             return score
 
         if baseline_ppl is None or not perplexity_exe:
+            failure_score = penalized_failure_score(score)
             trial.set_user_attr("ppl_skipped_reason", "baseline_ppl_unavailable")
-            print(f"[INFO] {step_name} beat current PPL-validated best score but baseline PPL is unavailable; skipping PPL benchmark.")
-            report_progress(score)
-            return score
+            trial.set_user_attr("discarded_by", "baseline_ppl_unavailable")
+            print(f"[INFO] {step_name} beat current PPL-validated best score but baseline PPL is unavailable; returning penalty score.")
+            report_progress(failure_score)
+            return failure_score
 
         ppl_flags = list(baseline_ppl_flags)
-        ppl_flags += opt.build_perplexity_cache_flags(**candidate_cache, spec_active=is_speculative)
+        ppl_flags += opt.build_perplexity_cache_flags(
+            candidate_cache["cache_k"],
+            candidate_cache["cache_v"],
+            spec_active=False,
+        )
         print(f"[DEBUG] PPL cache flags: {ppl_flags}")
         trial.set_user_attr("ppl_cache_k", ck)
         trial.set_user_attr("ppl_cache_v", cv)
-        trial.set_user_attr("ppl_cache_kd", ckd)
-        trial.set_user_attr("ppl_cache_vd", cvd)
+        trial.set_user_attr("ppl_cache_kd", None)
+        trial.set_user_attr("ppl_cache_vd", None)
         ppl, ppl_code, ppl_stderr = opt.run_perplexity(
             model_path, perplexity_exe, context_size,
             flags=ppl_flags, corpus_file=perplexity_file
@@ -329,10 +343,11 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         if not accepted:
             step_name = "DefaultConfig" if trial_role == "default_config" else f"Trial-{trial.number+1}"
             required = baseline_ppl * (1.0 + ppl_threshold)
+            failure_score = penalized_failure_score(score)
             print(f"[INFO] Discarded {step_name} by perplexity_gate: ppl {ppl}, baseline {baseline_ppl:.4f}, required <= {required:.4f}.")
             trial.set_user_attr("discarded_by", "perplexity_gate")
-            report_progress(score)
-            raise optuna.TrialPruned(f"perplexity_gate: score {score:.2f}")
+            report_progress(failure_score)
+            return failure_score
 
         update_best_quality(score)
         report_progress(score)
@@ -398,14 +413,40 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
     )
     best_trial = best_quality_trial
     if best_trial is None:
-        if baseline_ppl is None and default_trial is not None:
-            best_trial = default_trial
-            best_score = best_trial.value
-        else:
-            print("[INFO] No PPL-validated trial completed.")
-            return None
-    else:
-        best_score = best_quality_score
+        print("[INFO] No PPL-validated trial completed; returning baseline command as result.")
+        return {
+            "use_baseline_command": True,
+            "baseline_is_base_command": True,
+            "threads": -1,
+            "thread_batch": -1,
+            "batch": default_b,
+            "micro_batch": default_ub,
+            "fitt": default_fitt,
+            "cache_k": "f16",
+            "cache_v": "f16",
+            "cache_type_kd": "f16",
+            "cache_type_vd": "f16",
+            "mtp": is_speculative,
+            "spec_enabled": is_speculative,
+            "spec_type": "draft-mtp" if is_speculative else "",
+            "spec_draft_n": baseline_trial.get("spec_draft_n") if is_speculative else None,
+            "spec_draft_p_min": baseline_trial.get("spec_draft_p_min") if is_speculative else None,
+            "draft_model_path": draft_model_path,
+            "flash_attention": False,
+            "fit_on": False,
+            "baseline_pp": f"{base_pp:.2f}",
+            "baseline_tg": f"{base_tg:.2f}",
+            "baseline_score": f"{baseline_score:.2f}",
+            "best_score": f"{baseline_score:.2f}",
+            "best_quality_score": f"{best_quality_score:.2f}",
+            "best_pp": f"{base_pp:.2f}",
+            "best_tg": f"{base_tg:.2f}",
+            "best_ppl": None,
+            "baseline_ppl": baseline_ppl,
+            "ppl_threshold": ppl_threshold,
+        }
+
+    best_score = best_quality_score
 
     best_params = best_trial.params
 
@@ -438,6 +479,7 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         "best_quality_score": f"{best_quality_score:.2f}",
         "best_pp": f"{best_trial.user_attrs.get('pp', 0.0):.2f}",
         "best_tg": f"{best_trial.user_attrs.get('tg', 0.0):.2f}",
+        "best_ppl": best_quality_trial.user_attrs.get("perplexity") if best_quality_trial is not None else None,
     }
     if is_speculative:
         final_config.update({

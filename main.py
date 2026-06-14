@@ -3,9 +3,11 @@ sys = __import__('sys')  # import sys for platform detection after path manipula
 sys.path.insert(0, '.')
 import updater
 from gui_builder import LlamaServerGUI
+from optimisation_service import ensure_default_perplexity_file
 
 root = tk.Tk()
-gui = LlamaServerGUI(root)
+default_corpus_path = ensure_default_perplexity_file()
+gui = LlamaServerGUI(root, default_perplexity_file=default_corpus_path)
 
 # Disable mouse scroll wheel to prevent accidental value changes
 def _no_scroll(event):

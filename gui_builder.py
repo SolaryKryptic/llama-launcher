@@ -7,7 +7,7 @@ from tkinter import filedialog, messagebox, Tk, Toplevel, StringVar
 import tkinter as tk
 from tkinter import ttk
 from hardwarescanner import scan_hardware
-from optimisation_service import AVAILABLE_METHODS, DEFAULT_PERPLEXITY_FILE, OptimisationRequest, OptimisationService
+from optimisation_service import AVAILABLE_METHODS, DEFAULT_PERPLEXITY_FILE, OptimisationRequest, OptimisationService, resolve_perplexity_file
 import sys as _sys2
 
 import sys
@@ -47,7 +47,7 @@ def _save_last_folder(folder):
 class FlagConfig:
     """holds mutable flag state, builds generated cli string"""
 
-    def __init__(self):
+    def __init__(self, default_perplexity_file=None):
         self.model_path = ""          # set by browse dialog
         self.no_mmap = False            # disable memory mapped loading
         self.mlock = False              # lock model in ram to reduce swapping
@@ -82,7 +82,7 @@ class FlagConfig:
         self.cache_type_kd = "f16"     # draft-mtp cache type k
         self.cache_type_vd = "f16"     # draft-mtp cache type v
 
-        self.perplexity_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), DEFAULT_PERPLEXITY_FILE)
+        self.perplexity_file = resolve_perplexity_file(default_perplexity_file or DEFAULT_PERPLEXITY_FILE)
         self.ppl_threshold_percent = 3.0
 
         self.temperature = 0.8          # sampling temperature
@@ -95,7 +95,7 @@ class FlagConfig:
     def generate_command(self):
         parts = ["llama-server.exe -lv 4"]
 
-        model_path = self.model_path.strip()
+        model_path = str(self.model_path or "").strip()
         if model_path:
             parts.append(f' -m "{model_path}"')
 
@@ -137,7 +137,7 @@ class FlagConfig:
                 parts.append(f" --spec-draft-n-min {self.spec_draft_n_min}")
             if self.spec_draft_p_min > 0:
                 parts.append(f" --spec-draft-p-min {float(self.spec_draft_p_min):.1f}")
-            draft_path = self.draft_model_path.strip()
+            draft_path = str(self.draft_model_path or "").strip()
             if draft_path:
                 parts.append(f' --model-draft "{draft_path}"')
 
@@ -228,9 +228,80 @@ class FlagConfig:
 
     def from_dict(self, d):
         """restore mutable flag state from saved dict"""
+        string_defaults = {
+            "model_path": "",
+            "host": "0.0.0.0",
+            "spec_type": "",
+            "draft_model_path": "",
+            "cache_type_k": "f16",
+            "cache_type_v": "f16",
+            "cache_type_kd": "f16",
+            "cache_type_vd": "f16",
+            "perplexity_file": "",
+        }
+        int_defaults = {
+            "ctx_size_value": 512,
+            "n_gpu_layers": -1,
+            "cache_ram": 8000,
+            "num_threads": os.cpu_count() or 4,
+            "fitt": 1024,
+            "spec_draft_n_max": 0,
+            "spec_draft_n_min": 0,
+            "batch_size": 2048,
+            "micro_batch_size": 512,
+            "threads": -1,
+            "thread_batch": -1,
+            "port": 8080,
+            "top_k": 40,
+        }
+        float_defaults = {
+            "spec_draft_p_min": 0.0,
+            "temperature": 0.8,
+            "min_p": 0.0,
+            "presence_penalty": 0.0,
+            "top_p": 0.95,
+            "repeat_penalty": 1.1,
+            "ppl_threshold_percent": 3.0,
+        }
+        bool_defaults = {
+            "no_mmap": False,
+            "mlock": False,
+            "no_warmup": False,
+            "threads_enabled": False,
+            "flash_attention": False,
+            "fit_on": False,
+            "spec_enabled": False,
+        }
         for key, val in d.items():
-            if hasattr(self, key):
-                setattr(self, key, val)
+            if not hasattr(self, key):
+                continue
+            if val is None:
+                if key in string_defaults:
+                    val = string_defaults[key]
+                elif key in int_defaults:
+                    val = int_defaults[key]
+                elif key in float_defaults:
+                    val = float_defaults[key]
+                elif key in bool_defaults:
+                    val = bool_defaults[key]
+            elif key in string_defaults:
+                val = str(val or string_defaults[key])
+            elif key in int_defaults:
+                try:
+                    val = int(val)
+                except (ValueError, TypeError):
+                    val = int_defaults[key]
+            elif key in float_defaults:
+                try:
+                    val = float(val)
+                except (ValueError, TypeError):
+                    val = float_defaults[key]
+            elif key in bool_defaults:
+                if isinstance(val, str):
+                    val = val.strip().lower() in ("1", "true", "yes", "on")
+                else:
+                    val = bool(val)
+            setattr(self, key, val)
 
 
 # UI builder —> all ttk widget frames returned as methods
@@ -240,9 +311,9 @@ class FlagConfig:
 class LlamaServerGUI:
     """main tkinter gui for configuring llama server flags, generating commands"""
 
-    def __init__(self, root):
+    def __init__(self, root, default_perplexity_file=None):
         self.root = root
-        self.config = FlagConfig()
+        self.config = FlagConfig(default_perplexity_file)
         self._last_folder = _load_last_folder()
         self._last_window_geometries = {}
         self._geometry_save_jobs = {}
@@ -703,7 +774,7 @@ class LlamaServerGUI:
         """set tk variable values to match saved flag state"""
         tk = self._tk
         if "model_path" in saved_flags:
-            tk["model_path"].set(str(saved_flags["model_path"]))
+            tk["model_path"].set(str(saved_flags.get("model_path") or ""))
         if "n_gpu_layers" in saved_flags:
             try:
                 tk["n_gpu_layers"].set(int(saved_flags["n_gpu_layers"]))
@@ -747,7 +818,7 @@ class LlamaServerGUI:
                 pass
         if "spec_type" in saved_flags:
             try:
-                self.config.spec_type = str(saved_flags["spec_type"])
+                self.config.spec_type = str(saved_flags.get("spec_type") or "")
             except (ValueError, TypeError):
                 pass
         if "spec_draft_n_max" in saved_flags:
@@ -782,26 +853,26 @@ class LlamaServerGUI:
                 pass
         if "cache_type_k" in saved_flags:
             try:
-                tk["cache_type_k"].set(str(saved_flags["cache_type_k"]))
+                tk["cache_type_k"].set(str(saved_flags.get("cache_type_k") or "f16"))
             except (ValueError, TypeError):
                 pass
         if "cache_type_v" in saved_flags:
             try:
-                tk["cache_type_v"].set(str(saved_flags["cache_type_v"]))
+                tk["cache_type_v"].set(str(saved_flags.get("cache_type_v") or "f16"))
             except (ValueError, TypeError):
                 pass
         if "cache_type_kd" in saved_flags:
             try:
-                tk["cache_type_kd"].set(str(saved_flags["cache_type_kd"]))
+                tk["cache_type_kd"].set(str(saved_flags.get("cache_type_kd") or "f16"))
             except (ValueError, TypeError):
                 pass
         if "cache_type_vd" in saved_flags:
             try:
-                tk["cache_type_vd"].set(str(saved_flags["cache_type_vd"]))
+                tk["cache_type_vd"].set(str(saved_flags.get("cache_type_vd") or "f16"))
             except (ValueError, TypeError):
                 pass
         if "perplexity_file" in saved_flags:
-            self.config.perplexity_file = str(saved_flags["perplexity_file"])
+            self.config.perplexity_file = resolve_perplexity_file(str(saved_flags.get("perplexity_file") or DEFAULT_PERPLEXITY_FILE))
         if "ppl_threshold_percent" in saved_flags:
             try:
                 self.config.ppl_threshold_percent = float(saved_flags["ppl_threshold_percent"])
@@ -809,7 +880,7 @@ class LlamaServerGUI:
                 pass
         if "host" in saved_flags:
             try:
-                tk["host"].set(str(saved_flags["host"]))
+                tk["host"].set(str(saved_flags.get("host") or "0.0.0.0"))
             except (ValueError, TypeError):
                 pass
         if "port" in saved_flags:
@@ -1061,6 +1132,7 @@ class LlamaServerGUI:
         ctx_frame.grid(row=0, column=0, sticky="w")
 
         iv_ctx_var = tk.IntVar(value=self.config.ctx_size_value)
+        self._tk["ctx_size_value"] = iv_ctx_var
 
         def _on_ctx_val(*_):
             try:
@@ -1205,11 +1277,13 @@ class LlamaServerGUI:
 
         # Sub-options row (child of spec_frame same pack master)
         spec_sub_row = ttk.Frame(spec_frame)
+        self._spec_sub_row = spec_sub_row
         tk.Checkbutton(spec_sub_row, text="ngram-mod", variable=iv_spec_ngram).grid(row=0, column=0, sticky="w")
         tk.Checkbutton(spec_sub_row, text="draft-mtp", variable=iv_spec_draft).grid(row=0, column=1, sticky="w", padx=(16, 0))
 
         # Draft model inline block: browse button + label + max/min/p-min spinboxes
         spec_draft_row = ttk.Frame(spec_sub_row)
+        self._spec_draft_row = spec_draft_row
         spec_draft_row.grid(row=1, column=0, columnspan=8, sticky="w", pady=(2, 0))
         ttk.Button(spec_draft_row, text="Browse draft models...", command=self._browse_draft_model).pack(side="left", padx=(0, 4))
         self.draft_model_label = tk.Label(spec_draft_row, text="", anchor="w", justify="left", foreground="#666")
@@ -1691,7 +1765,12 @@ class LlamaServerGUI:
         saved_avg = config_data.get("optimiser_avg_runs", 1)
         saved_seed = config_data.get("optimiser_seed", 42)
         saved_ppl_threshold = config_data.get("optimiser_ppl_threshold_percent", self.config.ppl_threshold_percent)
-        saved_perplexity_file = config_data.get("perplexity_file", self.config.perplexity_file or os.path.join(os.path.dirname(os.path.abspath(__file__)), DEFAULT_PERPLEXITY_FILE))
+        saved_perplexity_file = (
+            config_data.get("perplexity_file")
+            or self.config.perplexity_file
+            or resolve_perplexity_file(DEFAULT_PERPLEXITY_FILE)
+        )
+        saved_perplexity_file = resolve_perplexity_file(saved_perplexity_file)
 
         dlg = Toplevel(self.root)
         dlg.title("Optimiser Settings")
@@ -1701,10 +1780,25 @@ class LlamaServerGUI:
 
         closed = [False]
 
-        def _close_optimiser_settings():
+        def _close_optimiser_settings(save_current=False):
             if closed[0]:
                 return
             closed[0] = True
+            try:
+                if save_current:
+                    payload = _get_optimiser_settings_payload()
+                    self.config.ppl_threshold_percent = payload["ppl_threshold_percent"]
+                    self.config.perplexity_file = payload["perplexity_file"]
+                    _save_optimiser_settings(payload)
+                else:
+                    perplexity_value = perplexity_file_var.get()
+                    if perplexity_value:
+                        self.config.perplexity_file = perplexity_value
+                        data = _load_config()
+                        data["perplexity_file"] = perplexity_value
+                        _save_config(data)
+            except Exception:
+                pass
             self._save_window_geometry("window_geometry_optimiser_settings", dlg)
             try:
                 dlg.destroy()
@@ -1741,6 +1835,13 @@ class LlamaServerGUI:
             )
             if path:
                 var.set(path)
+                self.config.perplexity_file = path
+                try:
+                    data = _load_config()
+                    data["perplexity_file"] = path
+                    _save_config(data)
+                except Exception:
+                    pass
 
         method_var = tk.StringVar(value=saved_method)
         row_method = ttk.Frame(dlg)
@@ -1752,7 +1853,7 @@ class LlamaServerGUI:
         _spin_row("Score Weight: (Value closer to 0 puts more weight on TG, closer to 1 puts more weight on PP)\nRecommend setting weighting to lower end (0.2-0.4) by default due to PP \nusually being x times larger than TG:", weight_var, 0.0, 1.0, 0.05, fmt="%.2f")
 
         ctx_var = tk.IntVar(value=saved_ctx)
-        _spin_row("Context Size:", ctx_var, 512, 131072, 512, width=10)
+        _spin_row("Context Size:", ctx_var, 512, 1310720, 512, width=10)
 
         trials_var = tk.IntVar(value=saved_trials)
         _spin_row("Bayesian Trial Count (recommended 40):", trials_var, 1, 500, 1, width=8)
@@ -1769,8 +1870,8 @@ class LlamaServerGUI:
         perplexity_file_var = tk.StringVar(value=saved_perplexity_file)
         _path_picker_row("Corpus File:", perplexity_file_var)
 
-        def _ok():
-            result[0] = {
+        def _get_optimiser_settings_payload():
+            return {
                 "method": method_var.get(),
                 "metric_weight": weight_var.get(),
                 "context_size": ctx_var.get(),
@@ -1780,25 +1881,35 @@ class LlamaServerGUI:
                 "ppl_threshold_percent": ppl_var.get(),
                 "perplexity_file": perplexity_file_var.get(),
             }
+
+        def _save_optimiser_settings(payload=None):
+            payload = payload or _get_optimiser_settings_payload()
             try:
                 data = _load_config()
                 data.update({
-                    "optimiser_method": result[0]["method"],
-                    "optimiser_weight": result[0]["metric_weight"],
-                    "optimiser_context_size": result[0]["context_size"],
-                    "optimiser_trials": result[0]["trials"],
-                    "optimiser_avg_runs": result[0]["avg_runs"],
-                    "optimiser_seed": result[0]["seed"],
-                    "optimiser_ppl_threshold_percent": result[0]["ppl_threshold_percent"],
-                    "perplexity_file": result[0]["perplexity_file"],
+                    "optimiser_method": payload["method"],
+                    "optimiser_weight": payload["metric_weight"],
+                    "optimiser_context_size": payload["context_size"],
+                    "optimiser_trials": payload["trials"],
+                    "optimiser_avg_runs": payload["avg_runs"],
+                    "optimiser_seed": payload["seed"],
+                    "optimiser_ppl_threshold_percent": payload["ppl_threshold_percent"],
+                    "perplexity_file": payload["perplexity_file"],
                 })
                 _save_config(data)
             except Exception:
                 pass
+
+        def _ok():
+            payload = _get_optimiser_settings_payload()
+            result[0] = payload
+            self.config.ppl_threshold_percent = payload["ppl_threshold_percent"]
+            self.config.perplexity_file = payload["perplexity_file"]
+            _save_optimiser_settings(payload)
             _close_optimiser_settings()
 
         def _cancel():
-            _close_optimiser_settings()
+            _close_optimiser_settings(save_current=True)
 
         btn_row = ttk.Frame(dlg)
         btn_row.pack(pady=8)
@@ -1995,7 +2106,7 @@ class LlamaServerGUI:
         best     = _safe_float(final_config.get("best_quality_score", final_config.get("best_score", 0.0)))
         best_pp  = _safe_float(final_config.get("best_pp", 0.0))
         best_tg  = _safe_float(final_config.get("best_tg", 0.0))
-        pct_gain = ((best - baseline) / baseline * 100) if baseline > 0 else 0.0
+        best_ppl = final_config.get("best_ppl")
 
         def _safe_bool(value, default=False):
             if value is None:
@@ -2006,13 +2117,16 @@ class LlamaServerGUI:
 
         flash_attention = _safe_bool(final_config.get("flash_attention"), False)
         fit_on = _safe_bool(final_config.get("fit_on"), False)
+        use_baseline_command = _safe_bool(final_config.get("use_baseline_command"), False)
+        pct_gain = 0.0 if use_baseline_command else ((best - baseline) / baseline * 100) if baseline > 0 else 0.0
 
         spec_enabled = _safe_bool(final_config.get("spec_enabled"), self.config.spec_enabled) if "spec_enabled" in final_config else bool(final_config.get("mtp") or final_config.get("draft_model_path") or self.config.spec_enabled)
-        spec_type = final_config.get("spec_type", "draft-mtp" if spec_enabled else self.config.spec_type)
+        spec_type = str(final_config.get("spec_type", "draft-mtp" if spec_enabled else self.config.spec_type) or "")
         spec_draft_n = final_config.get("spec_draft_n", self.config.spec_draft_n_max)
         spec_draft_p_min = final_config.get("spec_draft_p_min", self.config.spec_draft_p_min)
         spec_draft_n_min = final_config.get("spec_draft_n_min", self.config.spec_draft_n_min)
         draft_model_path = final_config.get("draft_model_path", self.config.draft_model_path or "")
+        draft_model_path = "" if draft_model_path is None else str(draft_model_path)
         cache_type_kd = final_config.get("cache_type_kd", self.config.cache_type_kd)
         cache_type_vd = final_config.get("cache_type_vd", self.config.cache_type_vd)
 
@@ -2021,6 +2135,11 @@ class LlamaServerGUI:
         batch = _safe_int(batch, batch)
         micro_batch = _safe_int(micro_batch, micro_batch)
         fitt = _safe_int(fitt, fitt)
+        display_threads = "--" if use_baseline_command else threads
+        display_thread_batch = "--" if use_baseline_command else thread_batch
+        display_batch = "--" if use_baseline_command else batch
+        display_micro_batch = "--" if use_baseline_command else micro_batch
+        display_fitt = "--" if use_baseline_command else fitt
 
         extra_flags = []
         if flash_attention:
@@ -2043,26 +2162,29 @@ class LlamaServerGUI:
             if "draft-mtp" in (spec_type or ""):
                 extra_flags.extend([f"-ctkd {cache_type_kd}", f"-ctvd {cache_type_vd}"])
 
-        recommended_flags = " ".join([
-            f"-t {threads}",
-            f"-tb {thread_batch}",
-            f"-b {batch}",
-            f"-ub {micro_batch}",
-            f"-c {ctx}",
-        ] + extra_flags + [
-            f"-fitt {fitt}",
-            f"-ctk {cache_k}",
-            f"-ctv {cache_v}",
-        ])
+        if use_baseline_command:
+            recommended_flags = "Baseline command: no tuned -t/-tb/-b/-ub/-fa/--fit/-fitt/-ct flags were applied."
+        else:
+            recommended_flags = " ".join([
+                f"-t {threads}",
+                f"-tb {thread_batch}",
+                f"-b {batch}",
+                f"-ub {micro_batch}",
+                f"-c {ctx}",
+            ] + extra_flags + [
+                f"-fitt {fitt}",
+                f"-ctk {cache_k}",
+                f"-ctv {cache_v}",
+            ])
 
         lines = [
             f"Method:           {method}",
             f"Context Size:     {ctx}",
-            f"Threads:          {threads}",
-            f"Thread Batch:     {thread_batch}",
-            f"Batch Size:       {batch}",
-            f"Micro-Batch:      {micro_batch}",
-            f"FITT Target:      {fitt}",
+            f"Threads:          {display_threads}",
+            f"Thread Batch:     {display_thread_batch}",
+            f"Batch Size:       {display_batch}",
+            f"Micro-Batch:      {display_micro_batch}",
+            f"FITT Target:      {display_fitt}",
             f"Cache K:          {cache_k}",
             f"Cache V:          {cache_v}",
             f"Cache Kd:         {cache_type_kd if spec_enabled and 'draft-mtp' in (spec_type or '') else '--'}",
@@ -2077,13 +2199,15 @@ class LlamaServerGUI:
             f"Baseline PP:      {baseline_pp:.2f} t/s",
             f"Baseline TG:      {baseline_tg:.2f} t/s",
             f"Baseline PPL:     {baseline_ppl if baseline_ppl is not None else '--'}",
+            f"Best PPL:         {best_ppl if best_ppl is not None else ('--' if use_baseline_command else '-- (PPL skipped)')}",
             f"PPL Threshold:    {ppl_threshold * 100:.1f}%" if baseline_ppl is not None else "PPL Threshold:    --",
             f"Best Score:   {best:.2f}",
             f"Best PP Speed:    {best_pp:.2f} t/s",
             f"Best TG Speed:    {best_tg:.2f} t/s",
             f"Improvement:      {pct_gain:.2f}%",
+            f"Result:           {'No trial beat baseline; using baseline command.' if use_baseline_command else 'Best PPL-validated trial selected.'}",
             f"",
-            "Recommended flags for llama-server:",
+            f"{'Baseline command' if use_baseline_command else 'Recommended flags for llama-server'}:",
             recommended_flags,
         ]
         text_area.insert("1.0", "\n".join(lines))
@@ -2101,43 +2225,80 @@ class LlamaServerGUI:
 
         def _apply():
             _set_config_attr("ctx_size_value", ctx)
-            _set_config_attr("threads", threads)
-            _set_config_attr("thread_batch", thread_batch)
             _set_config_attr("batch_size", batch)
             _set_config_attr("micro_batch_size", micro_batch)
             _set_config_attr("fitt", fitt)
-            _set_config_attr("cache_type_k", cache_k)
-            _set_config_attr("cache_type_v", cache_v)
-            _set_config_attr("flash_attention", flash_attention)
-            _set_config_attr("fit_on", fit_on)
+            if use_baseline_command:
+                _set_config_attr("threads", -1)
+                _set_config_attr("thread_batch", -1)
+                _set_config_attr("flash_attention", False)
+                _set_config_attr("fit_on", False)
+                _set_config_attr("cache_type_k", "f16")
+                _set_config_attr("cache_type_v", "f16")
+                _set_config_attr("cache_type_kd", "f16")
+                _set_config_attr("cache_type_vd", "f16")
+                _set_var("threads_val", -1)
+                _set_var("thread_batch", -1)
+                _set_var("batch_size", batch)
+                _set_var("micro_batch", micro_batch)
+                _set_var("fitt", fitt)
+                _set_var("flash_attention", False)
+                _set_var("fit_on", False)
+                _set_var("cache_type_k", "f16")
+                _set_var("cache_type_v", "f16")
+                _set_var("cache_type_kd", "f16")
+                _set_var("cache_type_vd", "f16")
+            else:
+                _set_config_attr("threads", threads)
+                _set_config_attr("thread_batch", thread_batch)
+                _set_config_attr("batch_size", batch)
+                _set_config_attr("micro_batch_size", micro_batch)
+                _set_config_attr("fitt", fitt)
+                _set_config_attr("cache_type_k", cache_k)
+                _set_config_attr("cache_type_v", cache_v)
+                _set_config_attr("cache_type_kd", cache_type_kd)
+                _set_config_attr("cache_type_vd", cache_type_vd)
+                _set_config_attr("flash_attention", flash_attention)
+                _set_config_attr("fit_on", fit_on)
+                _set_var("threads_val", threads)
+                _set_var("thread_batch", thread_batch)
+                _set_var("batch_size", batch)
+                _set_var("micro_batch", micro_batch)
+                _set_var("fitt", fitt)
+                _set_var("cache_type_k", cache_k)
+                _set_var("cache_type_v", cache_v)
+                _set_var("cache_type_kd", cache_type_kd)
+                _set_var("cache_type_vd", cache_type_vd)
+                _set_var("flash_attention", flash_attention)
+                _set_var("fit_on", fit_on)
             _set_config_attr("spec_enabled", spec_enabled)
             _set_config_attr("spec_type", spec_type)
-            _set_config_attr("spec_draft_n_max", int(spec_draft_n) if spec_draft_n else 0)
-            _set_config_attr("spec_draft_n_min", int(spec_draft_n_min) if spec_draft_n_min else 0)
-            _set_config_attr("spec_draft_p_min", float(spec_draft_p_min) if spec_draft_p_min else 0.0)
-            _set_config_attr("draft_model_path", draft_model_path if spec_enabled else "")
-            _set_config_attr("cache_type_kd", cache_type_kd)
-            _set_config_attr("cache_type_vd", cache_type_vd)
-
-            _set_var("threads_val", threads)
-            _set_var("thread_batch", thread_batch)
-            _set_var("batch_size", batch)
-            _set_var("micro_batch", micro_batch)
-            _set_var("fitt", fitt)
-            _set_var("cache_type_k", cache_k)
-            _set_var("cache_type_v", cache_v)
-            _set_var("flash_attention", flash_attention)
-            _set_var("fit_on", fit_on)
+            _set_config_attr("spec_draft_n_max", int(spec_draft_n) if spec_enabled and spec_draft_n else 0)
+            _set_config_attr("spec_draft_n_min", int(spec_draft_n_min) if spec_enabled and spec_draft_n_min else 0)
+            _set_config_attr("spec_draft_p_min", float(spec_draft_p_min) if spec_enabled and spec_draft_p_min else 0.0)
+            _set_config_attr("draft_model_path", draft_model_path if spec_enabled and "draft-mtp" in (spec_type or "") and draft_model_path else "")
+            _set_var("ctx_size_value", ctx)
             _set_var("spec_enabled", spec_enabled)
-            _set_var("spec_ngram", "ngram-mod" in (spec_type or ""))
-            _set_var("spec_draft", "draft-mtp" in (spec_type or ""))
-            _set_var("spec_draft_max", int(spec_draft_n) if spec_draft_n else 0)
-            _set_var("spec_draft_min", int(spec_draft_n_min) if spec_draft_n_min else 0)
-            _set_var("spec_draft_p_min", float(spec_draft_p_min) if spec_draft_p_min else 0.0)
-            _set_var("cache_type_kd", cache_type_kd)
-            _set_var("cache_type_vd", cache_type_vd)
-            if draft_model_path and spec_enabled:
+            _set_var("spec_ngram", spec_enabled and "ngram-mod" in (spec_type or ""))
+            _set_var("spec_draft", spec_enabled and "draft-mtp" in (spec_type or ""))
+            _set_var("spec_draft_max", int(spec_draft_n) if spec_enabled and spec_draft_n else 0)
+            _set_var("spec_draft_min", int(spec_draft_n_min) if spec_enabled and spec_draft_n_min else 0)
+            _set_var("spec_draft_p_min", float(spec_draft_p_min) if spec_enabled and spec_draft_p_min else 0.0)
+            if draft_model_path and spec_enabled and "draft-mtp" in (spec_type or ""):
                 self.draft_model_label.config(text="Using: " + os.path.basename(draft_model_path).rsplit(".gguf", 1)[0])
+            else:
+                self.draft_model_label.config(text="")
+            try:
+                if spec_enabled:
+                    self._spec_sub_row.pack()
+                else:
+                    self._spec_sub_row.pack_forget()
+                if spec_enabled and "draft-mtp" in (spec_type or ""):
+                    self._spec_draft_row.grid()
+                else:
+                    self._spec_draft_row.grid_remove()
+            except Exception:
+                pass
             self._update_command()
             _close_results_window()
 

@@ -31,7 +31,7 @@ PP_PROMPT = (
     "and reliably aligned with human values remains one of the most important open problems in the field."
 )
 TG_N_PREDICT = 128
-PERPLEXITY_FILE = "perplexity_corpus.txt"
+PERPLEXITY_FILE = "Moby Dick.txt"
 PPL_THRESHOLD = 0.03
 
 
@@ -89,7 +89,8 @@ def calculate_score(pp, tg, metric_weight=0.5):
 def _project_file(path):
     if not path or os.path.isabs(path):
         return path
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), path)
+    from optimisation_service import get_exe_dir
+    return os.path.join(get_exe_dir(), path)
 
 
 def _load_perplexity_corpus(corpus_file):
@@ -121,10 +122,26 @@ def _is_oom_error(stderr):
     return any(token in text for token in ("out of memory", "cudamalloc", "cuda malloc", "memory allocation", "failed to allocate", "oom"))
 
 
+def build_perplexity_base_flags(context_size):
+    context_size = int(context_size)
+    return [
+        "-fit", "on",
+        "-fitc", str(context_size),
+        "-c", str(context_size),
+        "-fitt", "50",
+        "-s", str(context_size // 8),
+        "--chunks", "3",
+    ]
+
+
 def run_perplexity(model_path, perplexity_exe, context_size, flags=None, corpus_file=PERPLEXITY_FILE, timeout=None):
     corpus_path = _write_temp_corpus(_load_perplexity_corpus(corpus_file))
     try:
-        cmd = [perplexity_exe, "-m", model_path, "-f", corpus_path] + list(flags or [])
+        cmd = (
+            [perplexity_exe, "-m", model_path, "-f", corpus_path]
+            + build_perplexity_base_flags(context_size)
+            + list(flags or [])
+        )
         result = subprocess.run(cmd, capture_output=True, text=True, creationflags=_NO_WINDOW, timeout=timeout)
         output = (result.stdout or "") + "\n" + (result.stderr or "")
         return parse_perplexity(output), result.returncode, output
@@ -148,7 +165,7 @@ def run_perplexity_baseline(model_path, perplexity_exe, context_size, corpus_fil
         print(f"[WARN] Baseline perplexity failed (exit {code}); cache quantisation quality gate will be skipped. {preview}")
         return None, [], False
 
-    q8_flags = build_perplexity_cache_flags("q8_0", "q8_0", spec_active=spec_active)
+    q8_flags = build_perplexity_cache_flags("q8_0", "q8_0", spec_active=False)
     ppl, code, stderr = run_perplexity(model_path, perplexity_exe, context_size, flags=q8_flags, corpus_file=corpus_file, timeout=timeout)
     if code == 0 and ppl is not None:
         print(f"[DEBUG] Baseline perplexity parsed: PPL={ppl:.4f} (q8_0 fallback baseline).")
@@ -179,7 +196,7 @@ def cache_differs_from_baseline(config, baseline_cache):
 
 def build_perplexity_cache_flags(cache_k, cache_v, cache_kd=None, cache_vd=None, spec_active=False):
     flags = ["-ctk", str(cache_k), "-ctv", str(cache_v)]
-    if spec_active:
+    if spec_active and cache_kd is not None and cache_vd is not None:
         flags += ["-ctkd", str(cache_kd), "-ctvd", str(cache_vd)]
     return flags
 
@@ -205,6 +222,7 @@ def build_server_flags(context_size, t=None, tb=None, b=None, ub=None, fitt=None
                        mtp=False, spec_draft_n=None, draft_model_path=None, spec_draft_p_min=None):
     flags = [
         "-c", str(context_size),
+        "-fitc", str(context_size),
         "--port", str(BENCH_PORT),
         "-lv", "4",
         "--host", "127.0.0.1",
