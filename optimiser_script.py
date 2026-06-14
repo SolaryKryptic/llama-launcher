@@ -1,9 +1,9 @@
 import subprocess
-import itertools
 import re
 import os
 import socket
 import time
+import tempfile
 import requests
 
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
@@ -31,6 +31,8 @@ PP_PROMPT = (
     "and reliably aligned with human values remains one of the most important open problems in the field."
 )
 TG_N_PREDICT = 128
+PERPLEXITY_FILE = "perplexity_corpus.txt"
+PPL_THRESHOLD = 0.03
 
 
 # ==========================================
@@ -82,6 +84,104 @@ def calculate_score(pp, tg, metric_weight=0.5):
     if pp is None or tg is None:
         return -1.0
     return (pp * metric_weight) + (tg * (1.0 - metric_weight))
+
+
+def _project_file(path):
+    if not path or os.path.isabs(path):
+        return path
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), path)
+
+
+def _load_perplexity_corpus(corpus_file):
+    try:
+        with open(_project_file(corpus_file or PERPLEXITY_FILE), "r", encoding="utf-8") as f:
+            text = f.read().strip()
+        return text if text else PP_PROMPT
+    except Exception:
+        return PP_PROMPT
+
+
+def _write_temp_corpus(text):
+    f = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
+    try:
+        f.write(text)
+        f.flush()
+        return f.name
+    finally:
+        f.close()
+
+
+def parse_perplexity(output):
+    match = re.search(r"PPL\s*=\s*([0-9]+(?:\.[0-9]+)?)", output or "")
+    return float(match.group(1)) if match else None
+
+
+def _is_oom_error(stderr):
+    text = (stderr or "").lower()
+    return any(token in text for token in ("out of memory", "cudamalloc", "cuda malloc", "memory allocation", "failed to allocate", "oom"))
+
+
+def run_perplexity(model_path, perplexity_exe, context_size, flags=None, corpus_file=PERPLEXITY_FILE, timeout=None):
+    corpus_path = _write_temp_corpus(_load_perplexity_corpus(corpus_file))
+    try:
+        cmd = [perplexity_exe, "-m", model_path, "-f", corpus_path] + list(flags or [])
+        result = subprocess.run(cmd, capture_output=True, text=True, creationflags=_NO_WINDOW, timeout=timeout)
+        output = (result.stdout or "") + "\n" + (result.stderr or "")
+        return parse_perplexity(output), result.returncode, output
+    finally:
+        try:
+            os.remove(corpus_path)
+        except Exception:
+            pass
+
+
+def run_perplexity_baseline(model_path, perplexity_exe, context_size, corpus_file=PERPLEXITY_FILE, timeout=None, spec_active=False):
+    ppl, code, stderr = run_perplexity(model_path, perplexity_exe, context_size, corpus_file=corpus_file, timeout=timeout)
+    if code == 0 and ppl is not None:
+        print(f"[DEBUG] Baseline perplexity parsed: PPL={ppl:.4f} (f16 baseline).")
+        return ppl, [], False
+    if code == 0 and ppl is None:
+        print("[WARN] Baseline perplexity completed but PPL could not be parsed.")
+        return None, [], False
+    if not _is_oom_error(stderr):
+        preview = (stderr or "").strip().replace("\r", " ").replace("\n", " ")[:1200]
+        print(f"[WARN] Baseline perplexity failed (exit {code}); cache quantisation quality gate will be skipped. {preview}")
+        return None, [], False
+
+    q8_flags = build_perplexity_cache_flags("q8_0", "q8_0", spec_active=spec_active)
+    ppl, code, stderr = run_perplexity(model_path, perplexity_exe, context_size, flags=q8_flags, corpus_file=corpus_file, timeout=timeout)
+    if code == 0 and ppl is not None:
+        print(f"[DEBUG] Baseline perplexity parsed: PPL={ppl:.4f} (q8_0 fallback baseline).")
+        return ppl, q8_flags, True
+    preview = (stderr or "").strip().replace("\r", " ").replace("\n", " ")[:1200]
+    print(f"[WARN] Baseline q8_0 perplexity failed (exit {code}); cache quantisation quality gate will be skipped. {preview}")
+    return None, q8_flags, True
+
+
+def passes_perplexity_gate(ppl, baseline_ppl, threshold=PPL_THRESHOLD):
+    if baseline_ppl is None:
+        return True
+    return ppl is not None and ppl <= baseline_ppl * (1.0 + threshold)
+
+
+def cache_differs_from_baseline(config, baseline_cache):
+    cache_k = config.get("cache_k")
+    cache_v = config.get("cache_v")
+    cache_kd = config.get("cache_kd")
+    cache_vd = config.get("cache_vd")
+    return (
+        cache_k != baseline_cache.get("cache_k") or
+        cache_v != baseline_cache.get("cache_v") or
+        (cache_kd is not None and cache_kd != baseline_cache.get("cache_kd", "f16")) or
+        (cache_vd is not None and cache_vd != baseline_cache.get("cache_vd", "f16"))
+    )
+
+
+def build_perplexity_cache_flags(cache_k, cache_v, cache_kd=None, cache_vd=None, spec_active=False):
+    flags = ["-ctk", str(cache_k), "-ctv", str(cache_v)]
+    if spec_active:
+        flags += ["-ctkd", str(cache_kd), "-ctvd", str(cache_vd)]
+    return flags
 
 
 def get_neighbors(current, sweep_list):
@@ -319,305 +419,3 @@ def run_benchmark(model_path, server_exe, context_size, proc_holder=None,
     if valid == 0:
         return 0.0, 0.0
     return pp_total / valid, tg_total / valid
-
-
-def run_full_optimisation(model_path, server_exe, context_size=16384, metric_weight=0.5,
-                          progress_callback=None, cancel_flag=None, proc_holder=None,
-                          draft_model_path=None, mtp=False):
-    """Run full two-stage sequential greedy + neighbourhood optimisation using llama-server."""
-    if cancel_flag is None:
-        cancel_flag = [False]
-    if proc_holder is None:
-        proc_holder = [None]
-
-    try:
-        params = build_thread_list()
-        threads_list  = params["threads"]
-        batch_list    = params["batch_sizes"]
-        fitt_list     = params["fitt_targets"]
-        cache_k_types = params["cache_k_types"]
-        cache_v_types = params["cache_v_types"]
-        spec_active = bool(mtp or draft_model_path)
-        cache_kd_types = cache_k_types if spec_active else None
-        cache_vd_types = cache_v_types if spec_active else None
-
-        stage1_total = len(threads_list) + len(batch_list) + len(fitt_list) + len(cache_k_types) + len(cache_v_types)
-        if spec_active:
-            stage1_total += len(cache_kd_types) + len(cache_vd_types)
-        neighbourhood_estimate = 6
-        total_runs = stage1_total + neighbourhood_estimate
-        run_idx = [0]
-
-        def _cb(step_name, last_score, best_score, baseline_score):
-            run_idx[0] += 1
-            if progress_callback:
-                progress_callback(run_idx[0], total_runs, step_name, last_score, best_score, baseline_score)
-
-        def bench(step_name, best_score, baseline_score, **config):
-            pp, tg = run_benchmark(model_path, server_exe, context_size,
-                                   proc_holder=proc_holder, draft_model_path=draft_model_path, **config)
-            score = calculate_score(pp, tg, metric_weight)
-            _cb(step_name, score, max(score, best_score), baseline_score)
-            return pp, tg, score
-
-        # ---- Baseline ----
-        base_pp, base_tg = run_benchmark(model_path, server_exe, context_size,
-                                         proc_holder=proc_holder, is_base=True,
-                                         draft_model_path=draft_model_path)
-        baseline_score = calculate_score(base_pp, base_tg, metric_weight)
-        if baseline_score <= 0:
-            return None
-
-        # ---- Stage 1 init ----
-        best_threads = threads_list[-1] if threads_list else None
-        best_batch   = batch_list[0]
-        best_fitt    = fitt_list[0]
-        best_cache_k = cache_k_types[0]
-        best_cache_v = cache_v_types[0]
-        best_cache_kd = "f16"
-        best_cache_vd = "f16"
-        global_best  = baseline_score
-        global_best_pp = base_pp
-        global_best_tg = base_tg
-
-        # Step 1.1 — Threads
-        stage1_step_best = -1.0
-        for t in threads_list:
-            if cancel_flag[0]: return None
-            pp, tg, score = bench(f"Threads={t}", global_best, baseline_score,
-                                  t=t, b=best_batch, fitt=best_fitt,
-                                  cache_k=best_cache_k, cache_v=best_cache_v,
-                                  cache_kd=best_cache_kd, cache_vd=best_cache_vd)
-            if score > stage1_step_best:
-                stage1_step_best = score
-                best_threads = t
-            if score > global_best:
-                global_best = score
-                global_best_pp, global_best_tg = pp, tg
-
-        # Step 1.2 — Batch size (with early stopping)
-        stage1_step_best = -1.0
-        drops = 0
-        for b in batch_list:
-            if cancel_flag[0]: return None
-            pp, tg, score = bench(f"Batch={b}", global_best, baseline_score,
-                                  t=best_threads, b=b, fitt=best_fitt,
-                                  cache_k=best_cache_k, cache_v=best_cache_v,
-                                  cache_kd=best_cache_kd, cache_vd=best_cache_vd)
-            if score > stage1_step_best:
-                stage1_step_best = score
-                best_batch = b
-                drops = 0
-            else:
-                drops += 1
-                if drops >= 2:
-                    break
-            if score > global_best:
-                global_best = score
-                global_best_pp, global_best_tg = pp, tg
-
-        # Step 1.3 — FITT target
-        stage1_step_best = -1.0
-        for fitt in fitt_list:
-            if cancel_flag[0]: return None
-            pp, tg, score = bench(f"FITT={fitt}", global_best, baseline_score,
-                                  t=best_threads, b=best_batch, fitt=fitt,
-                                  cache_k=best_cache_k, cache_v=best_cache_v,
-                                  cache_kd=best_cache_kd, cache_vd=best_cache_vd)
-            if score > stage1_step_best:
-                stage1_step_best = score
-                best_fitt = fitt
-            if score > global_best:
-                global_best = score
-                global_best_pp, global_best_tg = pp, tg
-
-        # Step 1.4 — K Cache type
-        stage1_step_best = -1.0
-        for ck in cache_k_types:
-            if cancel_flag[0]: return None
-            pp, tg, score = bench(f"CacheK={ck}", global_best, baseline_score,
-                                  t=best_threads, b=best_batch, fitt=best_fitt,
-                                  cache_k=ck, cache_v=best_cache_v,
-                                  cache_kd=best_cache_kd, cache_vd=best_cache_vd)
-            if score > stage1_step_best:
-                stage1_step_best = score
-                best_cache_k = ck
-            if score > global_best:
-                global_best = score
-                global_best_pp, global_best_tg = pp, tg
-
-        # Step 1.5 — V Cache type
-        stage1_step_best = -1.0
-        for cv in cache_v_types:
-            if cancel_flag[0]: return None
-            pp, tg, score = bench(f"CacheV={cv}", global_best, baseline_score,
-                                  t=best_threads, b=best_batch, fitt=best_fitt,
-                                  cache_k=best_cache_k, cache_v=cv,
-                                  cache_kd=best_cache_kd, cache_vd=best_cache_vd)
-            if score > stage1_step_best:
-                stage1_step_best = score
-                best_cache_v = cv
-            if score > global_best:
-                global_best = score
-                global_best_pp, global_best_tg = pp, tg
-
-        if spec_active:
-            # Step 1.6 — Kd Cache type
-            stage1_step_best = -1.0
-            for ckd in cache_kd_types:
-                if cancel_flag[0]: return None
-                pp, tg, score = bench(f"CacheKd={ckd}", global_best, baseline_score,
-                                      t=best_threads, b=best_batch, fitt=best_fitt,
-                                      cache_k=best_cache_k, cache_v=best_cache_v,
-                                      cache_kd=ckd, cache_vd=best_cache_vd)
-                if score > stage1_step_best:
-                    stage1_step_best = score
-                    best_cache_kd = ckd
-                if score > global_best:
-                    global_best = score
-                    global_best_pp, global_best_tg = pp, tg
-
-            # Step 1.7 — Vd Cache type
-            stage1_step_best = -1.0
-            for cvd in cache_vd_types:
-                if cancel_flag[0]: return None
-                pp, tg, score = bench(f"CacheVd={cvd}", global_best, baseline_score,
-                                      t=best_threads, b=best_batch, fitt=best_fitt,
-                                      cache_k=best_cache_k, cache_v=best_cache_v,
-                                      cache_kd=best_cache_kd, cache_vd=cvd)
-                if score > stage1_step_best:
-                    stage1_step_best = score
-                    best_cache_vd = cvd
-                if score > global_best:
-                    global_best = score
-                    global_best_pp, global_best_tg = pp, tg
-
-        # ---- Stage 2 — Neighbourhood verification ----
-        b_neighbors    = get_neighbors(best_batch, batch_list)
-        fitt_neighbors = get_neighbors(best_fitt, fitt_list)
-        grid = list(itertools.product(b_neighbors, fitt_neighbors))
-
-        final_best_score = global_best
-        final_config = {
-            "threads": best_threads,
-            "thread_batch": best_threads,
-            "batch": best_batch,
-            "micro_batch": best_batch,
-            "fitt": best_fitt,
-            "cache_k": best_cache_k,
-            "cache_v": best_cache_v,
-            "spec_enabled": spec_active,
-            "spec_type": "draft-mtp" if spec_active else "",
-            "draft_model_path": draft_model_path or "",
-            "flash_attention": True,
-            "fit_on": True,
-            "baseline_pp": base_pp,
-            "baseline_tg": base_tg,
-            "baseline_score": baseline_score,
-            "best_score": global_best,
-            "best_pp": global_best_pp,
-            "best_tg": global_best_tg,
-        }
-        if spec_active:
-            final_config.update({
-                "cache_type_kd": best_cache_kd,
-                "cache_type_vd": best_cache_vd,
-            })
-
-        for b, fitt in grid:
-            if b == best_batch and fitt == best_fitt:
-                continue
-            if cancel_flag[0]: return None
-            pp, tg, score = bench(f"Verify B={b} FITT={fitt}", final_best_score, baseline_score,
-                                  t=best_threads, b=b, fitt=fitt,
-                                  cache_k=best_cache_k, cache_v=best_cache_v,
-                                  cache_kd=best_cache_kd, cache_vd=best_cache_vd)
-            if score > final_best_score:
-                final_best_score = score
-                final_config = {
-                    "threads": best_threads,
-                    "thread_batch": best_threads,
-                    "batch": b,
-                    "micro_batch": b,
-                    "fitt": fitt,
-                    "cache_k": best_cache_k,
-                    "cache_v": best_cache_v,
-                    "spec_enabled": spec_active,
-                    "spec_type": "draft-mtp" if spec_active else "",
-                    "draft_model_path": draft_model_path or "",
-                    "flash_attention": True,
-                    "fit_on": True,
-                    "baseline_pp": base_pp,
-                    "baseline_tg": base_tg,
-                    "baseline_score": baseline_score,
-                    "best_score": score,
-                    "best_pp": pp,
-                    "best_tg": tg,
-                }
-                if spec_active:
-                    final_config.update({
-                        "cache_type_kd": best_cache_kd,
-                        "cache_type_vd": best_cache_vd,
-                    })
-
-        return final_config
-    finally:
-        # Ensure server process is stopped when function exits (success, error, or cancellation)
-        if proc_holder is not None:
-            try:
-                proc = proc_holder[0]
-                if proc is not None and proc.poll() is None:
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=5)
-                    except Exception:
-                        proc.kill()
-            except Exception:
-                pass
-            finally:
-                proc_holder[0] = None
-
-
-# ==========================================
-# STANDALONE ENTRY POINT
-# ==========================================
-if __name__ == "__main__":
-    MODEL_PATH   = r"H:\AI\unsloth\gemma-4-E4B-it-qat-GGUF\gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf"
-    LLAMA_SERVER = "llama-server.exe"
-    CONTEXT_SIZE = 16384
-    METRIC_WEIGHT = 0.5
-
-    params = build_thread_list()
-    print("============================================================")
-    print(f" Detected {params['max_threads']} Total Logical CPU Threads.")
-    print(f" Capped Sweep Boundary (75%): {params['cap_limit']} threads maximum.")
-    print(f" Thread configurations to sweep: {params['threads']}")
-    print(f" Benchmark port: {BENCH_PORT}")
-    print("============================================================")
-
-    def _print_progress(run_idx, total, step_name, last_score, best_score, baseline_score):
-        print(f"  [{run_idx}/{total}] {step_name} | Last: {last_score:.2f} | Best: {best_score:.2f} | Baseline: {baseline_score:.2f}")
-
-    result = run_full_optimisation(
-        model_path=MODEL_PATH,
-        server_exe=LLAMA_SERVER,
-        context_size=CONTEXT_SIZE,
-        metric_weight=METRIC_WEIGHT,
-        progress_callback=_print_progress,
-    )
-
-    if result:
-        print("\n============================================================")
-        print(" Optimization Complete!")
-        print("============================================================")
-        print(f"  Text Gen Speed:    {result['best_tg']:.2f} t/s")
-        print(f"  Prompt Speed:      {result['best_pp']:.2f} t/s")
-        print(f"  Best Score:        {result['best_score']:.2f}")
-        print(f"  Baseline Score:    {result['baseline_score']:.2f}")
-        pct = ((result['best_score'] - result['baseline_score']) / result['baseline_score']) * 100
-        print(f"  Improvement:       {pct:.2f}%")
-        print(f"\n  Flags: -t {result['threads']} -b {result['batch']} -ub {result['batch']} "
-              f"-c {CONTEXT_SIZE} -fitt {result['fitt']} "
-              f"-ctk {result['cache_k']} -ctv {result['cache_v']}")
-    else:
-        print("[FAIL] Optimisation did not complete.")

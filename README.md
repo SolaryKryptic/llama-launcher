@@ -35,14 +35,12 @@ Point-and-click interface to configure and generate `llama-server` command-line 
 
 ### Auto-Optimiser
 
-- **Optimiser Settings**: Choose sequential or Bayesian optimisation, score weighting, context size, Bayesian trial count, average runs per trial, and seed
-- **Sequential Greedy Search**: Sweeps threads, batch size, FITT target, KV cache types, and draft-MTP cache types when MTP is active
+- **Optimiser Settings**: Choose score weighting, context size, Bayesian trial count, average runs per trial, and seed
 - **Bayesian Optimisation**: Uses Optuna TPE search across threads, thread batch, batch size, micro-batch, FITT, KV cache types, draft-MTP cache types, and speculative draft settings
 - **MTP / Draft-MTP Support**: Can optimise MTP without a separate draft model, or with a selected draft model; `--model-draft` is only added when a draft model path is selected
 - **Speculative Draft Controls**: Configure draft-MTP draft model, draft token max/min, and `--spec-draft-p-min`
-- **Neighbourhood Verification**: Tests adjacent combinations around the best batch × FITT result to confirm the final sequential result
-- **Live Progress Window**: Shows progress, current step, ETA, baseline score, last score, and best score while benchmarking
-- **Results Dialog**: Shows the final method, context size, tuned flags, baseline score/speeds, Trial 0 baseline values, best score/speeds, and improvement percentage
+- **Live Progress Window**: Shows progress, current step, ETA, baseline score, last score, and best PPL-validated score while benchmarking
+- **Results Dialog**: Shows the final method, context size, tuned flags, baseline score/speeds, Trial 0 baseline values, best PPL-validated score/speeds, and improvement percentage
 - **Apply Settings**: Applies tuned `-t`, `-tb`, `-b`, `-ub`, `-fitt`, `-ctk`, `-ctv`, `-ctkd`, `-ctvd`, flash attention, fit-on, and draft-MTP settings back into the main command generator
 - **Copy Flags**: Copies the final recommended `llama-server` flags, including MTP/speculative flags when enabled
 
@@ -63,7 +61,7 @@ Point-and-click interface to configure and generate `llama-server` command-line 
 - Windows (hardware scanner uses WMI / PowerShell)
 - `llama.cpp` built with `llama-server.exe` available
 - `requests`
-- `optuna` required only for Bayesian optimisation
+- `optuna` required for optimisation
 
 ## Usage
 
@@ -78,8 +76,8 @@ llama-launcher/
 ├── main.py              # Entry point — creates Tk root and GUI instance
 ├── gui_builder.py       # Tk GUI, command generation, settings persistence, optimisation UI
 ├── hardwarescanner.py   # WMI-based hardware detection (CPU/GPU/VRAM/RAM)
-├── optimisation_service.py  # Dispatches sequential and Bayesian optimisation requests
-├── optimiser_script.py  # Sequential optimiser, benchmark runner, and result parser
+├── optimisation_service.py  # Dispatches optimisation requests
+├── optimiser_script.py  # Shared benchmark, PPL, cache, and server utilities
 ├── bayesian.py          # Optuna Bayesian optimisation harness
 ├── llama_gui_data.json  # Auto-generated config (saved settings)
 └── updater.py

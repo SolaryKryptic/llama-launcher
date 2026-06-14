@@ -7,7 +7,7 @@ from tkinter import filedialog, messagebox, Tk, Toplevel, StringVar
 import tkinter as tk
 from tkinter import ttk
 from hardwarescanner import scan_hardware
-from optimisation_service import AVAILABLE_METHODS, METHOD_BAYESIAN, OptimisationRequest, OptimisationService
+from optimisation_service import AVAILABLE_METHODS, DEFAULT_PERPLEXITY_FILE, OptimisationRequest, OptimisationService
 import sys as _sys2
 
 import sys
@@ -81,6 +81,9 @@ class FlagConfig:
         self.cache_type_v = "f16"      # kv cache type v
         self.cache_type_kd = "f16"     # draft-mtp cache type k
         self.cache_type_vd = "f16"     # draft-mtp cache type v
+
+        self.perplexity_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), DEFAULT_PERPLEXITY_FILE)
+        self.ppl_threshold_percent = 3.0
 
         self.temperature = 0.8          # sampling temperature
         self.min_p = 0.0                # minimum p sampling value
@@ -213,6 +216,8 @@ class FlagConfig:
             "cache_type_v": self.cache_type_v,
             "cache_type_kd": self.cache_type_kd,
             "cache_type_vd": self.cache_type_vd,
+            "perplexity_file": self.perplexity_file,
+            "ppl_threshold_percent": self.ppl_threshold_percent,
             "temperature": self.temperature,
             "min_p": self.min_p,
             "top_k": self.top_k,
@@ -239,6 +244,8 @@ class LlamaServerGUI:
         self.root = root
         self.config = FlagConfig()
         self._last_folder = _load_last_folder()
+        self._last_window_geometries = {}
+        self._geometry_save_jobs = {}
 
         # Save config on window close
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -597,7 +604,11 @@ class LlamaServerGUI:
         saved_geometry = config_data.get(config_key)
         if isinstance(saved_geometry, str) and saved_geometry:
             try:
+                win.withdraw()
                 win.geometry(saved_geometry)
+                win.update_idletasks()
+                win.deiconify()
+                win.lift()
                 return
             except Exception:
                 pass
@@ -628,14 +639,65 @@ class LlamaServerGUI:
         y = max(0, (screen_h - min_height) // 2)
         win.geometry(f"{min_width}x{min_height}+{x}+{y}")
 
+    def _normalise_window_geometry(self, win):
+        try:
+            if win.winfo_exists():
+                geom = f"{win.winfo_width()}x{win.winfo_height()}+{win.winfo_x()}+{win.winfo_y()}"
+            else:
+                geom = self._last_window_geometries.get(f"__current__:{id(win)}")
+            if not geom or geom.startswith("0x0"):
+                return None
+            return geom
+        except Exception:
+            return None
+
     def _save_window_geometry(self, config_key, win):
         """Save current Toplevel geometry to config."""
         try:
+            job_id = getattr(self, "_geometry_save_jobs", {}).get(config_key)
+            if job_id is not None:
+                try:
+                    self.root.after_cancel(job_id)
+                except Exception:
+                    pass
+                try:
+                    self._geometry_save_jobs.pop(config_key, None)
+                except Exception:
+                    pass
+            geom = self._normalise_window_geometry(win)
+            if geom is None:
+                return
+            self._last_window_geometries[config_key] = geom
             data = _load_config()
-            data[config_key] = win.geometry()
+            data[config_key] = geom
             _save_config(data)
         except Exception:
             pass
+
+    def _queue_window_geometry_save(self, config_key, win, delay_ms=250):
+        if not hasattr(self, "_geometry_save_jobs"):
+            self._geometry_save_jobs = {}
+        geom = self._normalise_window_geometry(win)
+        if geom is not None:
+            self._last_window_geometries[f"__current__:{id(win)}"] = geom
+            self._last_window_geometries[config_key] = geom
+        previous = self._geometry_save_jobs.get(config_key)
+        if previous is not None:
+            try:
+                self.root.after_cancel(previous)
+            except Exception:
+                pass
+        def _save_later():
+            self._geometry_save_jobs.pop(config_key, None)
+            self._save_window_geometry(config_key, win)
+        self._geometry_save_jobs[config_key] = self.root.after(delay_ms, _save_later)
+
+    def _bind_window_geometry_persistence(self, config_key, win):
+        def _on_configure(event):
+            if event.width > 1 and event.height > 1:
+                self._queue_window_geometry_save(config_key, win)
+        win.bind("<Configure>", _on_configure)
+        win.bind("<Destroy>", lambda *_: self._save_window_geometry(config_key, win))
 
     def _restore_vars(self, saved_flags):
         """set tk variable values to match saved flag state"""
@@ -736,6 +798,13 @@ class LlamaServerGUI:
         if "cache_type_vd" in saved_flags:
             try:
                 tk["cache_type_vd"].set(str(saved_flags["cache_type_vd"]))
+            except (ValueError, TypeError):
+                pass
+        if "perplexity_file" in saved_flags:
+            self.config.perplexity_file = str(saved_flags["perplexity_file"])
+        if "ppl_threshold_percent" in saved_flags:
+            try:
+                self.config.ppl_threshold_percent = float(saved_flags["ppl_threshold_percent"])
             except (ValueError, TypeError):
                 pass
         if "host" in saved_flags:
@@ -1595,7 +1664,17 @@ class LlamaServerGUI:
             server_exe = "llama-server"
         else:
             return {"ok": False, "message": "llama-server.exe not found. Please ensure llama.cpp is on your PATH or in the same folder as your model."}
-        return {"ok": True, "model_path": self.config.model_path, "server_exe": server_exe}
+
+        perplexity_candidate = _os.path.join(model_dir, "llama-perplexity.exe")
+        if _os.path.isfile(perplexity_candidate):
+            perplexity_exe = perplexity_candidate
+        elif _shutil.which("llama-perplexity.exe"):
+            perplexity_exe = "llama-perplexity.exe"
+        elif _shutil.which("llama-perplexity"):
+            perplexity_exe = "llama-perplexity"
+        else:
+            return {"ok": False, "message": "llama-perplexity.exe not found. Please ensure llama.cpp is on your PATH or in the same folder as your model."}
+        return {"ok": True, "model_path": self.config.model_path, "server_exe": server_exe, "perplexity_exe": perplexity_exe}
 
     def _show_optimiser_config_dialog(self):
         """Show optimiser settings. Returns dict or None if cancelled."""
@@ -1603,27 +1682,34 @@ class LlamaServerGUI:
         result = [None]
 
         config_data = _load_config()
-        saved_method = config_data.get("optimiser_method", METHOD_BAYESIAN)
+        saved_method = config_data.get("optimiser_method", "bayesian")
         if saved_method not in AVAILABLE_METHODS:
-            saved_method = METHOD_BAYESIAN
+            saved_method = "bayesian"
         saved_weight = config_data.get("optimiser_weight", 0.5)
         saved_ctx = config_data.get("optimiser_context_size", 16384)
         saved_trials = config_data.get("optimiser_trials", 40)
         saved_avg = config_data.get("optimiser_avg_runs", 1)
         saved_seed = config_data.get("optimiser_seed", 42)
+        saved_ppl_threshold = config_data.get("optimiser_ppl_threshold_percent", self.config.ppl_threshold_percent)
+        saved_perplexity_file = config_data.get("perplexity_file", self.config.perplexity_file or os.path.join(os.path.dirname(os.path.abspath(__file__)), DEFAULT_PERPLEXITY_FILE))
 
         dlg = Toplevel(self.root)
         dlg.title("Optimiser Settings")
         dlg.transient(self.root)
         dlg.grab_set()
-        dlg.resizable(False, False)
-        self._restore_window_geometry(dlg, "window_geometry_optimiser_settings", 650, 320)
-        self._ensure_min_geometry(dlg, 650, 320)
-        dlg.minsize(650, 320)
+        dlg.resizable(True, True)
+
+        closed = [False]
 
         def _close_optimiser_settings():
+            if closed[0]:
+                return
+            closed[0] = True
             self._save_window_geometry("window_geometry_optimiser_settings", dlg)
-            dlg.destroy()
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
 
         dlg.protocol("WM_DELETE_WINDOW", _close_optimiser_settings)
 
@@ -1637,6 +1723,24 @@ class LlamaServerGUI:
             if fmt is not None:
                 kwargs["format"] = fmt
             ttk.Spinbox(row, **kwargs).pack(anchor="w", pady=2)
+
+        def _path_picker_row(label, var):
+            row = ttk.Frame(dlg)
+            row.pack(fill="x", padx=20, pady=3)
+            ttk.Label(row, text=label).pack(anchor="w", side="left")
+            entry = ttk.Entry(row, textvariable=var, width=34)
+            entry.pack(side="left", fill="x", expand=True, padx=(8, 4))
+            ttk.Button(row, text="Browse...", command=lambda: _browse_perplexity_file(var)).pack(side="left")
+
+        def _browse_perplexity_file(var):
+            initialdir = os.path.dirname(var.get()) if var.get() and os.path.isdir(os.path.dirname(var.get())) else os.path.dirname(os.path.abspath(__file__))
+            path = filedialog.askopenfilename(
+                title="Select Perplexity Corpus File",
+                filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+                initialdir=initialdir,
+            )
+            if path:
+                var.set(path)
 
         method_var = tk.StringVar(value=saved_method)
         row_method = ttk.Frame(dlg)
@@ -1659,6 +1763,12 @@ class LlamaServerGUI:
         seed_var = tk.IntVar(value=saved_seed)
         _spin_row("Seed (keep the same between optimisation runs for reproducibility):", seed_var, 0, 2147483647, 1, width=10)
 
+        ppl_var = tk.DoubleVar(value=saved_ppl_threshold)
+        _spin_row("PPL Threshold (% degradation allowed):", ppl_var, 1.0, 10.0, 0.5, width=8, fmt="%.1f")
+
+        perplexity_file_var = tk.StringVar(value=saved_perplexity_file)
+        _path_picker_row("Corpus File:", perplexity_file_var)
+
         def _ok():
             result[0] = {
                 "method": method_var.get(),
@@ -1667,6 +1777,8 @@ class LlamaServerGUI:
                 "trials": trials_var.get(),
                 "avg_runs": avg_var.get(),
                 "seed": seed_var.get(),
+                "ppl_threshold_percent": ppl_var.get(),
+                "perplexity_file": perplexity_file_var.get(),
             }
             try:
                 data = _load_config()
@@ -1677,6 +1789,8 @@ class LlamaServerGUI:
                     "optimiser_trials": result[0]["trials"],
                     "optimiser_avg_runs": result[0]["avg_runs"],
                     "optimiser_seed": result[0]["seed"],
+                    "optimiser_ppl_threshold_percent": result[0]["ppl_threshold_percent"],
+                    "perplexity_file": result[0]["perplexity_file"],
                 })
                 _save_config(data)
             except Exception:
@@ -1691,7 +1805,16 @@ class LlamaServerGUI:
         ttk.Button(btn_row, text="Start", command=_ok).pack(side="left", padx=6)
         ttk.Button(btn_row, text="Cancel", command=_cancel).pack(side="left", padx=6)
 
-        dlg.wait_window()
+        self._restore_window_geometry(dlg, "window_geometry_optimiser_settings", 650, 460)
+        self._ensure_min_geometry(dlg, 650, 460)
+        dlg.minsize(650, 460)
+        self._bind_window_geometry_persistence("window_geometry_optimiser_settings", dlg)
+
+        try:
+            dlg.wait_window()
+        finally:
+            if not closed[0]:
+                self._save_window_geometry("window_geometry_optimiser_settings", dlg)
         return result[0]
 
     def _show_progress_window(self, request):
@@ -1703,13 +1826,14 @@ class LlamaServerGUI:
         win.title("Optimisation in Progress")
         win.transient(self.root)
         win.grab_set()
-        self._restore_window_geometry(win, "window_geometry_optimisation_in_progress", 620, 380)
-        self._ensure_min_geometry(win, 620, 380)
-        win.minsize(620, 380)
+
+        closed = [False]
 
         def _close_progress_window():
-            if win.winfo_exists():
-                self._save_window_geometry("window_geometry_optimisation_in_progress", win)
+            if closed[0]:
+                return
+            closed[0] = True
+            self._save_window_geometry("window_geometry_optimisation_in_progress", win)
             try:
                 win.destroy()
             except Exception:
@@ -1733,7 +1857,7 @@ class LlamaServerGUI:
         bar = ttk.Progressbar(win, variable=progress_var, maximum=100, mode="determinate")
         bar.pack(fill="x", padx=20, pady=6)
 
-        # Score display —> baseline / last / best
+        # Score display —> baseline / last / best PPL-validated
         scores_frame = ttk.Frame(win)
         scores_frame.pack(pady=4)
 
@@ -1811,7 +1935,17 @@ class LlamaServerGUI:
                 if not cancel_flag[0]:
                     self.root.after(0, _close_progress_window)
         _threading.Thread(target=_run_thread, daemon=True).start()
-        win.wait_window()
+
+        self._restore_window_geometry(win, "window_geometry_optimisation_in_progress", 620, 380)
+        self._ensure_min_geometry(win, 620, 380)
+        win.minsize(620, 380)
+        self._bind_window_geometry_persistence("window_geometry_optimisation_in_progress", win)
+
+        try:
+            win.wait_window()
+        finally:
+            if not closed[0]:
+                self._save_window_geometry("window_geometry_optimisation_in_progress", win)
         return final_config_holder[0], error_holder[0]
 
     def _show_results_window(self, final_config):
@@ -1856,7 +1990,9 @@ class LlamaServerGUI:
         baseline_pp = _safe_float(final_config.get("baseline_pp", 0.0))
         baseline_tg = _safe_float(final_config.get("baseline_tg", 0.0))
         baseline = _safe_float(final_config.get("baseline_score", 0.0))
-        best     = _safe_float(final_config.get("best_score", 0.0))
+        baseline_ppl = final_config.get("baseline_ppl")
+        ppl_threshold = final_config.get("ppl_threshold", 0.03)
+        best     = _safe_float(final_config.get("best_quality_score", final_config.get("best_score", 0.0)))
         best_pp  = _safe_float(final_config.get("best_pp", 0.0))
         best_tg  = _safe_float(final_config.get("best_tg", 0.0))
         pct_gain = ((best - baseline) / baseline * 100) if baseline > 0 else 0.0
@@ -1940,7 +2076,9 @@ class LlamaServerGUI:
             f"Baseline Score:   {baseline:.2f} (pre-optimisation)",
             f"Baseline PP:      {baseline_pp:.2f} t/s",
             f"Baseline TG:      {baseline_tg:.2f} t/s",
-            f"Best Score:       {best:.2f}",
+            f"Baseline PPL:     {baseline_ppl if baseline_ppl is not None else '--'}",
+            f"PPL Threshold:    {ppl_threshold * 100:.1f}%" if baseline_ppl is not None else "PPL Threshold:    --",
+            f"Best Score:   {best:.2f}",
             f"Best PP Speed:    {best_pp:.2f} t/s",
             f"Best TG Speed:    {best_tg:.2f} t/s",
             f"Improvement:      {pct_gain:.2f}%",
@@ -2089,6 +2227,7 @@ class LlamaServerGUI:
 
         model_path = prereq_result["model_path"]
         server_exe = prereq_result["server_exe"]
+        perplexity_exe = prereq_result["perplexity_exe"]
 
         # Config dialog ask for weight and context size
         cfg = self._show_optimiser_config_dialog()
@@ -2104,8 +2243,11 @@ class LlamaServerGUI:
         request = OptimisationRequest(
             model_path=model_path,
             server_exe=server_exe,
+            perplexity_exe=perplexity_exe,
+            perplexity_file=cfg["perplexity_file"],
             context_size=cfg["context_size"],
             metric_weight=cfg["metric_weight"],
+            ppl_threshold_percent=cfg["ppl_threshold_percent"],
             method=cfg["method"],
             draft_model_path=draft_path,
             mtp=mtp_enabled,
