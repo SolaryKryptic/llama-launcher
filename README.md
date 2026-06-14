@@ -9,8 +9,9 @@ Point-and-click interface to configure and generate `llama-server` command-line 
 <img width="765" height="894" alt="image" src="https://github.com/user-attachments/assets/84888536-f92f-488e-bc87-10e53cb829d8" />
 
 
-- Gemma 12B MTP results after optimisation
-<img width="579" height="552" alt="image" src="https://github.com/user-attachments/assets/e10f067d-9ba7-4353-8a33-22d14b5c5759" />
+- Qwen 4B MTP results after optimisation
+<img width="579" height="580" alt="image" src="https://github.com/user-attachments/assets/20516c98-fbd9-40fa-973e-9b98e78cf397" />
+
 
 
 - Gemma E4B MTP results after optimisation
