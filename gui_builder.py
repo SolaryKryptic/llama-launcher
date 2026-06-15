@@ -8,6 +8,7 @@ import tkinter as tk
 from tkinter import ttk
 from hardwarescanner import scan_hardware
 from optimisation_service import AVAILABLE_METHODS, DEFAULT_PERPLEXITY_FILE, OptimisationRequest, OptimisationService, resolve_perplexity_file
+from optimiser_script import BENCH_PORT, kill_port
 import sys as _sys2
 
 import sys
@@ -1939,9 +1940,18 @@ class LlamaServerGUI:
         win.grab_set()
 
         closed = [False]
+        worker_done = [False]
 
-        def _close_progress_window():
+        def _close_progress_window(request_cancel=False):
             if closed[0]:
+                return
+            if not worker_done[0]:
+                if request_cancel and not cancel_flag[0]:
+                    cancel_flag[0] = True
+                    cancel_button.config(state="disabled")
+                    label_var.set("Cancelling optimisation...")
+                    kill_port(BENCH_PORT, proc_holder)
+                win.after(250, lambda: _close_progress_window(request_cancel=False))
                 return
             closed[0] = True
             self._save_window_geometry("window_geometry_optimisation_in_progress", win)
@@ -1950,7 +1960,7 @@ class LlamaServerGUI:
             except Exception:
                 pass
 
-        win.protocol("WM_DELETE_WINDOW", _close_progress_window)
+        win.protocol("WM_DELETE_WINDOW", lambda: _close_progress_window(request_cancel=True))
 
         cancel_flag = [False]
         proc_holder = [None]
@@ -1986,18 +1996,13 @@ class LlamaServerGUI:
             ttk.Label(f, text=lbl, font=("Segoe UI", 8)).pack()
             tk.Label(f, textvariable=var, font=("Consolas", 12, "bold"), fg="#27ae60").pack()
 
-        def _on_cancel():
-            cancel_flag[0] = True
-            # Kill the running llama-server process immediately
-            try:
-                proc = proc_holder[0]
-                if proc is not None and proc.poll() is None:
-                    proc.kill()
-            except Exception:
-                pass
-            _close_progress_window()
+        cancel_button = ttk.Button(win, text="Cancel")
 
-        ttk.Button(win, text="Cancel", command=_on_cancel).pack(pady=8)
+        def _on_cancel():
+            _close_progress_window(request_cancel=True)
+
+        cancel_button.config(command=_on_cancel)
+        cancel_button.pack(pady=8)
 
         start_time = [_time.time()]
 
@@ -2030,21 +2035,20 @@ class LlamaServerGUI:
             finally:
                 # Ensure the server process is properly stopped after optimization completes
                 try:
-                    proc = proc_holder[0]
-                    if proc is not None and proc.poll() is None:
-                        proc.terminate()
-                        proc.wait(timeout=5)
+                    if cancel_flag[0]:
+                        kill_port(BENCH_PORT, proc_holder)
+                    else:
+                        proc = proc_holder[0] if proc_holder else None
+                        if proc is not None and proc.poll() is None:
+                            proc.terminate()
+                            proc.wait(timeout=5)
                 except Exception:
-                    try:
-                        if proc is not None:
-                            proc.kill()
-                    except Exception:
-                        pass
+                    kill_port(BENCH_PORT, proc_holder)
                 finally:
-                    proc_holder[0] = None
-                
-                if not cancel_flag[0]:
-                    self.root.after(0, _close_progress_window)
+                    if proc_holder:
+                        proc_holder[0] = None
+                    worker_done[0] = True
+                    self.root.after(0, lambda: _close_progress_window(request_cancel=False))
         _threading.Thread(target=_run_thread, daemon=True).start()
 
         self._restore_window_geometry(win, "window_geometry_optimisation_in_progress", 620, 380)

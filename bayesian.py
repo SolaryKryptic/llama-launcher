@@ -54,7 +54,7 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
     base_pp, base_tg = opt.run_benchmark(
         model_path, server_exe, context_size,
         proc_holder=proc_holder, is_base=True, avg_runs=avg_runs,
-        draft_model_path=draft_model_path, mtp=is_speculative
+        draft_model_path=draft_model_path, mtp=is_speculative, cancel_flag=cancel_flag
     )
     baseline_score = opt.calculate_score(base_pp, base_tg, metric_weight)
     if baseline_score <= 0:
@@ -67,7 +67,7 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
     baseline_ppl_f16_oom = False
     if perplexity_exe:
         baseline_ppl, baseline_ppl_flags, baseline_ppl_f16_oom = opt.run_perplexity_baseline(
-            model_path, perplexity_exe, context_size, corpus_file=perplexity_file, spec_active=is_speculative
+            model_path, perplexity_exe, context_size, corpus_file=perplexity_file, spec_active=is_speculative, cancel_flag=cancel_flag
         )
         if baseline_ppl_f16_oom:
             print("[INFO] Baseline f16 perplexity OOM; using q8_0 baseline for quality gate.")
@@ -197,6 +197,10 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
             "ppl_threshold": ppl_threshold,
         }
 
+    if cancel_flag and cancel_flag[0]:
+        opt.kill_port(opt.BENCH_PORT, proc_holder)
+        return baseline_result()
+
     if default_threads == -1 or default_tb == -1:
         return baseline_result()
 
@@ -232,6 +236,8 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
 
             if time_budget and (time.time() - start_time) >= time_budget:
                 print(f"[INFO] Early stopping: time budget reached ({time_budget:.0f}s).")
+                study.stop()
+            if cancel_flag and cancel_flag[0]:
                 study.stop()
 
             if trial_log:
@@ -272,6 +278,8 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
     def objective(trial):
         nonlocal best_quality_score, best_quality_trial
         if cancel_flag and cancel_flag[0]:
+            opt.kill_port(opt.BENCH_PORT, proc_holder)
+            trial.study.stop()
             raise optuna.TrialPruned()
 
         pair_label = trial.suggest_categorical("thread_pair", thread_pair_labels)
@@ -345,7 +353,7 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
                         cache_kd=ckd, cache_vd=cvd,
                         mtp=is_speculative, spec_draft_n=sdn,
                         avg_runs=trial_avg_runs, draft_model_path=draft_model_path,
-                        spec_draft_p_min=sdp
+                        spec_draft_p_min=sdp, cancel_flag=cancel_flag
                     )
                 except KeyboardInterrupt:
                     raise
@@ -368,6 +376,9 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
             return 0.0, 0.0, f"all 3 attempts failed; last: {last_error}"
 
         pp, tg, bench_error = benchmark_with_retry()
+        if cancel_flag and cancel_flag[0]:
+            opt.kill_port(opt.BENCH_PORT, proc_holder)
+            raise optuna.TrialPruned()
         if bench_error:
             failure_score = penalized_failure_score()
             trial.set_user_attr("error", bench_error)
@@ -425,7 +436,7 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         trial.set_user_attr("ppl_cache_vd", None)
         ppl, ppl_code, ppl_stderr = opt.run_perplexity(
             model_path, perplexity_exe, context_size,
-            flags=ppl_flags, corpus_file=perplexity_file
+            flags=ppl_flags, corpus_file=perplexity_file, cancel_flag=cancel_flag
         )
         step_name = "DefaultConfig" if trial_role == "default_config" else f"Trial-{trial.number+1}"
         print(f"[DEBUG] Perplexity parsed for {step_name}: PPL={ppl if ppl is not None else 'unparsed'}, baseline={baseline_ppl:.4f}, threshold={ppl_threshold * 100.0:.1f}%.")
@@ -465,6 +476,8 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
     except optuna.TrialPruned:
         print("[INFO] Study pruned/cancelled.")
     finally:
+        if cancel_flag and cancel_flag[0]:
+            opt.kill_port(opt.BENCH_PORT, proc_holder)
         if trial_log:
             trial_log.close()
 

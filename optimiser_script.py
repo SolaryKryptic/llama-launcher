@@ -137,26 +137,61 @@ def build_perplexity_base_flags(context_size):
     ]
 
 
-def run_perplexity(model_path, perplexity_exe, context_size, flags=None, corpus_file=PERPLEXITY_FILE, timeout=None):
+def run_perplexity(model_path, perplexity_exe, context_size, flags=None, corpus_file=PERPLEXITY_FILE, timeout=None, cancel_flag=None):
     corpus_path = _write_temp_corpus(_load_perplexity_corpus(corpus_file))
+    output_path = None
+    proc = None
     try:
         cmd = (
             [perplexity_exe, "-m", model_path, "-f", corpus_path]
             + build_perplexity_base_flags(context_size)
             + list(flags or [])
         )
-        result = subprocess.run(cmd, capture_output=True, text=True, creationflags=_NO_WINDOW, timeout=timeout)
-        output = (result.stdout or "") + "\n" + (result.stderr or "")
-        return parse_perplexity(output), result.returncode, output
+        with tempfile.NamedTemporaryFile("w+", delete=False, encoding="utf-8") as output_file:
+            output_path = output_file.name
+            proc = subprocess.Popen(
+                cmd,
+                stdout=output_file,
+                stderr=subprocess.STDOUT,
+                text=True,
+                creationflags=_NO_WINDOW,
+            )
+        deadline = time.time() + timeout if timeout else None
+        while proc.poll() is None:
+            if cancel_flag and cancel_flag[0]:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                raise KeyboardInterrupt
+            if deadline is not None and time.time() >= deadline:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                return None, -1, "perplexity timed out"
+            time.sleep(0.25)
+        with open(output_path, "r", encoding="utf-8", errors="ignore") as output_file:
+            output = output_file.read()
+        return parse_perplexity(output), proc.returncode, output
+    except KeyboardInterrupt:
+        if proc is not None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        raise
     finally:
-        try:
-            os.remove(corpus_path)
-        except Exception:
-            pass
+        for path in (corpus_path, output_path):
+            if path:
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
 
 
-def run_perplexity_baseline(model_path, perplexity_exe, context_size, corpus_file=PERPLEXITY_FILE, timeout=None, spec_active=False):
-    ppl, code, stderr = run_perplexity(model_path, perplexity_exe, context_size, corpus_file=corpus_file, timeout=timeout)
+def run_perplexity_baseline(model_path, perplexity_exe, context_size, corpus_file=PERPLEXITY_FILE, timeout=None, spec_active=False, cancel_flag=None):
+    ppl, code, stderr = run_perplexity(model_path, perplexity_exe, context_size, corpus_file=corpus_file, timeout=timeout, cancel_flag=cancel_flag)
     if code == 0 and ppl is not None:
         print(f"[DEBUG] Baseline perplexity parsed: PPL={ppl:.4f} (f16 baseline).")
         return ppl, [], False
@@ -169,7 +204,7 @@ def run_perplexity_baseline(model_path, perplexity_exe, context_size, corpus_fil
         return None, [], False
 
     q8_flags = build_perplexity_cache_flags("q8_0", "q8_0", spec_active=False)
-    ppl, code, stderr = run_perplexity(model_path, perplexity_exe, context_size, flags=q8_flags, corpus_file=corpus_file, timeout=timeout)
+    ppl, code, stderr = run_perplexity(model_path, perplexity_exe, context_size, flags=q8_flags, corpus_file=corpus_file, timeout=timeout, cancel_flag=cancel_flag)
     if code == 0 and ppl is not None:
         print(f"[DEBUG] Baseline perplexity parsed: PPL={ppl:.4f} (q8_0 fallback baseline).")
         return ppl, q8_flags, True
@@ -217,6 +252,83 @@ def get_neighbors(current, sweep_list):
 def port_is_free(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         return s.connect_ex(("127.0.0.1", port)) != 0
+
+
+def get_pids_using_port(port):
+    try:
+        result = subprocess.run(
+            ["netstat", "-ano"],
+            capture_output=True,
+            text=True,
+            creationflags=_NO_WINDOW,
+            timeout=5,
+        )
+    except Exception as e:
+        print(f"[DEBUG] Failed to inspect port {port}: {e}")
+        return []
+
+    pids = set()
+    port_text = str(port)
+    for line in (result.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) < 5 or parts[0].upper() != "TCP":
+            continue
+        local_addr = parts[1]
+        pid_text = parts[-1]
+        if not pid_text.isdigit():
+            continue
+        if ":" not in local_addr:
+            continue
+        if local_addr.rsplit(":", 1)[-1] != port_text:
+            continue
+        pids.add(int(pid_text))
+    return sorted(pids)
+
+
+def kill_pid(pid):
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            capture_output=True,
+            text=True,
+            creationflags=_NO_WINDOW,
+            timeout=10,
+        )
+    except Exception as e:
+        print(f"[DEBUG] Failed to kill PID {pid}: {e}")
+
+
+def kill_port(port=BENCH_PORT, proc_holder=None):
+    proc = None
+    if isinstance(proc_holder, list) and proc_holder:
+        proc = proc_holder[0]
+
+    if proc is not None and proc.poll() is None:
+        print(f"[INFO] Killing held server process PID {proc.pid} on port {port}.")
+        try:
+            proc.kill()
+            proc.wait(timeout=5)
+        except Exception as e:
+            print(f"[DEBUG] Failed to kill held process PID {proc.pid}: {e}")
+
+    pids = get_pids_using_port(port)
+    for pid in pids:
+        print(f"[INFO] Killing process PID {pid} using port {port}.")
+        kill_pid(pid)
+
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if port_is_free(port):
+            print(f"[DEBUG] Port {port} is free.")
+            return True
+        time.sleep(0.25)
+
+    remaining = get_pids_using_port(port)
+    if remaining:
+        print(f"[WARN] Port {port} still appears occupied by PID(s): {remaining}")
+        return False
+    print(f"[DEBUG] Port {port} is free.")
+    return True
 
 
 def build_server_flags(context_size, t=None, tb=None, b=None, ub=None, fitt=None,
@@ -377,16 +489,26 @@ def run_benchmark(model_path, server_exe, context_size, proc_holder=None,
                   t=None, tb=None, b=None, ub=None, fitt=None, cache_k="f16", cache_v="f16",
                   cache_kd="f16", cache_vd="f16",
                   no_mmap=False, is_base=False, avg_runs=1, mtp=False, spec_draft_n=None,
-                  draft_model_path=None, spec_draft_p_min=None):
+                  draft_model_path=None, spec_draft_p_min=None, cancel_flag=None):
     """Start llama-server, run benchmark, stop server. Returns (pp_tps, tg_tps)."""
     pp_total, tg_total, valid = 0.0, 0.0, 0
 
     for run_i in range(avg_runs):
+        if cancel_flag and cancel_flag[0]:
+            kill_port(BENCH_PORT, proc_holder)
+            raise KeyboardInterrupt
+
         # Wait until port is fully released before starting
         deadline = time.time() + 15
         while not port_is_free(BENCH_PORT) and time.time() < deadline:
+            if cancel_flag and cancel_flag[0]:
+                kill_port(BENCH_PORT, proc_holder)
+                raise KeyboardInterrupt
             print(f"[DEBUG] Port {BENCH_PORT} still occupied, waiting...")
             time.sleep(1)
+        if cancel_flag and cancel_flag[0]:
+            kill_port(BENCH_PORT, proc_holder)
+            raise KeyboardInterrupt
         if not port_is_free(BENCH_PORT):
             print(f"[DEBUG] Port {BENCH_PORT} still occupied after 15s, skipping run {run_i+1}.")
             continue
@@ -404,13 +526,26 @@ def run_benchmark(model_path, server_exe, context_size, proc_holder=None,
         )
 
         try:
+            if cancel_flag and cancel_flag[0]:
+                kill_port(BENCH_PORT, proc_holder)
+                raise KeyboardInterrupt
             if not wait_for_server(proc=proc):
+                if cancel_flag and cancel_flag[0]:
+                    kill_port(BENCH_PORT, proc_holder)
+                    raise KeyboardInterrupt
                 stop_server(proc)
                 continue
 
             response = run_completion()
+            if cancel_flag and cancel_flag[0]:
+                kill_port(BENCH_PORT, proc_holder)
+                raise KeyboardInterrupt
             pp, tg = parse_completion_results(response)
             print(f"[DEBUG] Result: pp={pp:.2f} tg={tg:.2f}")
+
+            if cancel_flag and cancel_flag[0]:
+                kill_port(BENCH_PORT, proc_holder)
+                raise KeyboardInterrupt
 
             if pp == 0 and tg == 0:
                 print(f"[DEBUG] Benchmark returned 0 speed. Inspecting server logs...")
@@ -431,7 +566,10 @@ def run_benchmark(model_path, server_exe, context_size, proc_holder=None,
                 tg_total += tg
                 valid += 1
         finally:
-            stop_server(proc)
+            if cancel_flag and cancel_flag[0]:
+                kill_port(BENCH_PORT, proc_holder)
+            else:
+                stop_server(proc)
             if proc_holder is not None:
                 proc_holder[0] = None
             # Give OS time to fully release the port
