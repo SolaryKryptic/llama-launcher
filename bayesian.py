@@ -75,11 +75,10 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
             print("[WARN] Baseline perplexity unavailable; cache quantisation quality gate will be skipped.")
 
     params = opt.build_thread_list()
-    threads_choices = params.get("threads") or [max(1, params.get("cap_limit", 1))]
-    cap_limit = params.get("cap_limit", 1) or max(1, threads_choices[-1] if threads_choices else 1)
-    threads_choices = [t for t in threads_choices if 1 <= t <= cap_limit] or [max(1, cap_limit)]
-    thread_batch_choices = params.get("thread_batch") or threads_choices
-    thread_batch_choices = [t for t in thread_batch_choices if 1 <= t <= max(1, cap_limit)] or threads_choices
+    threads_choices = sorted(set(params.get("threads") or []))
+    cap_limit = params.get("cap_limit", 1) or max(1, threads_choices[-1] if threads_choices else 0)
+    threads_choices = [t for t in threads_choices if 1 <= t <= cap_limit]
+
     batch_choices = params.get("batch_sizes", [128, 256, 512, 1024, 2048])
     micro_batch_choices = params.get("micro_batch_sizes", [128, 256, 512, 1024, 2048])
     fitt_choices = params.get("fitt_targets", [50])
@@ -100,18 +99,107 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
     best_quality_score = baseline_score
     best_quality_trial = None
 
-    def next_higher_thread_batch(current_t):
-        for choice in sorted(set(thread_batch_choices)):
-            if choice > current_t:
-                return choice
-        return max(thread_batch_choices)
+    default_b = 512 if 512 in batch_choices else batch_choices[0]
+    default_ub = min(default_b, 512 if 512 in micro_batch_choices else micro_batch_choices[0])
+    default_fitt = fitt_choices[0]
+    default_ck = "f16" if "f16" in cache_k_choices else cache_k_choices[0]
+    default_cv = "f16" if "f16" in cache_v_choices else cache_v_choices[0]
+    default_cache_kd = ("f16" if "f16" in cache_kd_choices else cache_kd_choices[0]) if is_speculative else None
+    default_cache_vd = ("f16" if "f16" in cache_vd_choices else cache_vd_choices[0]) if is_speculative else None
 
-    def choose_thread_batch(raw_tb, current_t):
-        valid_choices = [choice for choice in sorted(set(thread_batch_choices)) if choice >= current_t]
-        if not valid_choices:
-            return max(thread_batch_choices)
-        return min(valid_choices, key=lambda choice: abs(choice - raw_tb))
-    
+    if not threads_choices:
+        print("[INFO] No valid -t thread amounts detected; returning baseline command with threads=-1 thread_batch=-1.")
+        default_threads = -1
+        default_tb = -1
+    else:
+        max_thread_batch = max(1, params.get("max_threads") or cap_limit or threads_choices[-1])
+        thread_batch_choices = params.get("thread_batch") or threads_choices
+        thread_batch_choices = sorted(set(t for t in thread_batch_choices if 1 <= t <= max_thread_batch))
+
+        def next_valid_thread_batch(current_t):
+            valid_choices = [choice for choice in thread_batch_choices if choice >= current_t]
+            return valid_choices[0] if valid_choices else max(thread_batch_choices)
+
+        if not thread_batch_choices:
+            print("[INFO] No valid -tb thread-batch amounts detected; returning baseline command with threads=-1 thread_batch=-1.")
+            default_threads = -1
+            default_tb = -1
+        else:
+            default_threads = threads_choices[-1]
+            default_tb = next_valid_thread_batch(default_threads)
+
+    thread_pairs = []
+    thread_pair_labels = []
+    if default_threads != -1 and default_tb != -1:
+        thread_pairs = [
+            (t, tb)
+            for t in threads_choices
+            for tb in thread_batch_choices
+            if tb >= t
+        ]
+        if not thread_pairs:
+            print("[INFO] No valid -t/-tb pairs detected; returning baseline command with threads=-1 thread_batch=-1.")
+            default_threads = -1
+            default_tb = -1
+        else:
+            thread_pair_labels = [f"{t}/{tb}" for t, tb in thread_pairs]
+
+    def parse_thread_pair(pair_label):
+        t_str, tb_str = pair_label.split("/")
+        return int(t_str), int(tb_str)
+
+    baseline_trial = {
+        "threads": default_threads,
+        "thread_batch": default_tb,
+        "batch": default_b,
+        "micro_batch": default_ub,
+        "fitt": default_fitt,
+        "cache_k": default_ck,
+        "cache_v": default_cv,
+    }
+    if is_speculative:
+        baseline_trial["cache_kd"] = default_cache_kd
+        baseline_trial["cache_vd"] = default_cache_vd
+    if is_speculative and spec_draft_n_choices:
+        baseline_trial["spec_draft_n"] = 4 if 4 in spec_draft_n_choices else spec_draft_n_choices[0]
+        baseline_trial["spec_draft_p_min"] = 0.4
+
+    def baseline_result():
+        return {
+            "use_baseline_command": True,
+            "baseline_is_base_command": True,
+            "threads": -1,
+            "thread_batch": -1,
+            "batch": default_b,
+            "micro_batch": default_ub,
+            "fitt": default_fitt,
+            "cache_k": "f16",
+            "cache_v": "f16",
+            "cache_type_kd": "f16",
+            "cache_type_vd": "f16",
+            "mtp": is_speculative,
+            "spec_enabled": is_speculative,
+            "spec_type": "draft-mtp" if is_speculative else "",
+            "spec_draft_n": baseline_trial.get("spec_draft_n") if is_speculative else None,
+            "spec_draft_p_min": baseline_trial.get("spec_draft_p_min") if is_speculative else None,
+            "draft_model_path": draft_model_path,
+            "flash_attention": False,
+            "fit_on": False,
+            "baseline_pp": f"{base_pp:.2f}",
+            "baseline_tg": f"{base_tg:.2f}",
+            "baseline_score": f"{baseline_score:.2f}",
+            "best_score": f"{baseline_score:.2f}",
+            "best_quality_score": f"{best_quality_score:.2f}",
+            "best_pp": f"{base_pp:.2f}",
+            "best_tg": f"{base_tg:.2f}",
+            "best_ppl": None,
+            "baseline_ppl": baseline_ppl,
+            "ppl_threshold": ppl_threshold,
+        }
+
+    if default_threads == -1 or default_tb == -1:
+        return baseline_result()
+
     study = optuna.create_study(
         direction="maximize",
         sampler=optuna.samplers.TPESampler(
@@ -129,8 +217,8 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         "number", "state", "value", "pp", "tg", "best_quality_score", "error",
         "discarded_by", "perplexity", "ppl_validated", "ppl_skipped_reason",
         "ppl_cache_k", "ppl_cache_v", "ppl_cache_kd", "ppl_cache_vd",
-        "trial_role", "effective_thread_batch", "raw_thread_batch",
-        "param_threads", "param_thread_batch", "param_batch", "param_micro_batch",
+        "trial_role", "thread_pair", "thread_batch", "thread_batch_valid",
+        "param_threads", "param_thread_batch", "param_thread_pair", "param_batch", "param_micro_batch",
         "param_fitt", "param_cache_k", "param_cache_v",
     ]
     if is_speculative:
@@ -166,10 +254,13 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
                     "ppl_cache_kd": trial.user_attrs.get("ppl_cache_kd"),
                     "ppl_cache_vd": trial.user_attrs.get("ppl_cache_vd"),
                     "trial_role": trial_role,
-                    "effective_thread_batch": trial.user_attrs.get("thread_batch_effective"),
-                    "raw_thread_batch": trial.user_attrs.get("thread_batch_raw"),
+                    "thread_pair": trial.user_attrs.get("thread_pair"),
+                    "thread_batch": trial.user_attrs.get("thread_batch"),
+                    "thread_batch_valid": trial.user_attrs.get("thread_batch_valid", False),
                 }
                 row.update({f"param_{k}": v for k, v in trial.params.items()})
+                row["param_threads"] = trial.user_attrs.get("threads", row.get("param_threads"))
+                row["param_thread_batch"] = trial.user_attrs.get("thread_batch", row.get("param_thread_batch"))
                 writer = csv.DictWriter(trial_log, fieldnames=csv_fieldnames, extrasaction="ignore")
                 if trial_log.tell() == 0:
                     writer.writeheader()
@@ -183,11 +274,12 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         if cancel_flag and cancel_flag[0]:
             raise optuna.TrialPruned()
 
-        t = trial.suggest_categorical("threads", threads_choices)
-        raw_tb = trial.suggest_int("thread_batch", min(thread_batch_choices), max(thread_batch_choices))
-        tb = choose_thread_batch(raw_tb, t)
-        trial.set_user_attr("thread_batch_raw", raw_tb)
-        trial.set_user_attr("thread_batch_effective", tb)
+        pair_label = trial.suggest_categorical("thread_pair", thread_pair_labels)
+        t, tb = parse_thread_pair(pair_label)
+        trial.set_user_attr("thread_pair", pair_label)
+        trial.set_user_attr("threads", t)
+        trial.set_user_attr("thread_batch", tb)
+        trial.set_user_attr("thread_batch_valid", True)
         b = trial.suggest_categorical("batch", batch_choices)
         ub_candidate = trial.suggest_categorical("micro_batch", micro_batch_choices)
         ub = min(ub_candidate, b)
@@ -353,35 +445,12 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         report_progress(score)
         return score
 
-    # Warm-start with a sensible baseline configuration
-    default_threads = threads_choices[-1] if threads_choices else max(1, params.get("cap_limit", 1))
-    default_tb = next_higher_thread_batch(default_threads)
-    default_b = 512 if 512 in batch_choices else batch_choices[0]
-    default_ub = min(default_b, 512 if 512 in micro_batch_choices else micro_batch_choices[0])
-    default_fitt = fitt_choices[0]
-    default_ck = "f16" if "f16" in cache_k_choices else cache_k_choices[0]
-    default_cv = "f16" if "f16" in cache_v_choices else cache_v_choices[0]
-    default_cache_kd = ("f16" if "f16" in cache_kd_choices else cache_kd_choices[0]) if is_speculative else None
-    default_cache_vd = ("f16" if "f16" in cache_vd_choices else cache_vd_choices[0]) if is_speculative else None
-
-    baseline_trial = {
-        "threads": default_threads,
-        "thread_batch": default_tb,
-        "batch": default_b,
-        "micro_batch": default_ub,
-        "fitt": default_fitt,
-        "cache_k": default_ck,
-        "cache_v": default_cv,
-    }
-    if is_speculative:
-        baseline_trial["cache_kd"] = default_cache_kd
-        baseline_trial["cache_vd"] = default_cache_vd
-    if is_speculative and spec_draft_n_choices:
-        baseline_trial["spec_draft_n"] = 4 if 4 in spec_draft_n_choices else spec_draft_n_choices[0]
-        baseline_trial["spec_draft_p_min"] = 0.4
-
     try:
-        study.enqueue_trial(baseline_trial)
+        baseline_optuna_trial = dict(baseline_trial)
+        baseline_optuna_trial["thread_pair"] = f"{default_threads}/{default_tb}"
+        baseline_optuna_trial.pop("threads", None)
+        baseline_optuna_trial.pop("thread_batch", None)
+        study.enqueue_trial(baseline_optuna_trial)
         print(
             "[INFO] Enqueued default config trial, separate from base baseline: "
             f"-t {default_threads} -tb {default_tb} -b {default_b} -ub {default_ub}"
@@ -404,8 +473,8 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         if trial.value is not None and trial.value > float("-inf")
     ]
     if not successful_trials:
-        print("[INFO] No successful trials completed.")
-        return None
+        print("[INFO] No successful trials completed; returning baseline command as result.")
+        return baseline_result()
 
     default_trial = next(
         (trial for trial in study.trials if trial.user_attrs.get("trial_role") == "default_config"),
@@ -414,48 +483,17 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
     best_trial = best_quality_trial
     if best_trial is None:
         print("[INFO] No PPL-validated trial completed; returning baseline command as result.")
-        return {
-            "use_baseline_command": True,
-            "baseline_is_base_command": True,
-            "threads": -1,
-            "thread_batch": -1,
-            "batch": default_b,
-            "micro_batch": default_ub,
-            "fitt": default_fitt,
-            "cache_k": "f16",
-            "cache_v": "f16",
-            "cache_type_kd": "f16",
-            "cache_type_vd": "f16",
-            "mtp": is_speculative,
-            "spec_enabled": is_speculative,
-            "spec_type": "draft-mtp" if is_speculative else "",
-            "spec_draft_n": baseline_trial.get("spec_draft_n") if is_speculative else None,
-            "spec_draft_p_min": baseline_trial.get("spec_draft_p_min") if is_speculative else None,
-            "draft_model_path": draft_model_path,
-            "flash_attention": False,
-            "fit_on": False,
-            "baseline_pp": f"{base_pp:.2f}",
-            "baseline_tg": f"{base_tg:.2f}",
-            "baseline_score": f"{baseline_score:.2f}",
-            "best_score": f"{baseline_score:.2f}",
-            "best_quality_score": f"{best_quality_score:.2f}",
-            "best_pp": f"{base_pp:.2f}",
-            "best_tg": f"{base_tg:.2f}",
-            "best_ppl": None,
-            "baseline_ppl": baseline_ppl,
-            "ppl_threshold": ppl_threshold,
-        }
+        return baseline_result()
 
     best_score = best_quality_score
 
     best_params = best_trial.params
+    final_threads = best_trial.user_attrs.get("threads", best_params.get("threads"))
+    final_thread_batch = best_trial.user_attrs.get("thread_batch", best_params.get("thread_batch"))
 
     final_config = {
-        "threads": best_params["threads"],
-        "thread_batch": best_trial.user_attrs.get(
-            "thread_batch_effective",
-            next_higher_thread_batch(best_params.get("thread_batch", best_params["threads"])),
-        ),
+        "threads": final_threads,
+        "thread_batch": final_thread_batch,
         "batch": best_params["batch"],
         "micro_batch": best_params.get("micro_batch", best_params["batch"]),
         "fitt": best_params["fitt"],
