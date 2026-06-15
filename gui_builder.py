@@ -2201,7 +2201,7 @@ class LlamaServerGUI:
             f"Baseline PPL:     {baseline_ppl if baseline_ppl is not None else '--'}",
             f"Best PPL:         {best_ppl if best_ppl is not None else ('--' if use_baseline_command else '-- (PPL skipped)')}",
             f"PPL Threshold:    {ppl_threshold * 100:.1f}%" if baseline_ppl is not None else "PPL Threshold:    --",
-            f"Best Score:   {best:.2f}",
+            f"Best Score:       {best:.2f}",
             f"Best PP Speed:    {best_pp:.2f} t/s",
             f"Best TG Speed:    {best_tg:.2f} t/s",
             f"Improvement:      {pct_gain:.2f}%",
