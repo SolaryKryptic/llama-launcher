@@ -126,6 +126,9 @@ def build_perplexity_base_flags(context_size):
     context_size = int(context_size)
     return [
         "-fit", "on",
+        "--no-warmup",
+        "--no-mmap",
+        "-lv", "3",
         "-fitc", str(context_size),
         "-c", str(context_size),
         "-fitt", "50",
