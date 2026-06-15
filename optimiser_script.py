@@ -122,9 +122,9 @@ def _is_oom_error(stderr):
     return any(token in text for token in ("out of memory", "cudamalloc", "cuda malloc", "memory allocation", "failed to allocate", "oom"))
 
 
-def build_perplexity_base_flags(context_size):
+def build_perplexity_base_flags(context_size, cpu_only=False):
     context_size = int(context_size)
-    return [
+    flags = [
         "-fit", "on",
         "--no-warmup",
         "--no-mmap",
@@ -135,16 +135,19 @@ def build_perplexity_base_flags(context_size):
         "-s", str(context_size // 8),
         "--chunks", "3",
     ]
+    if cpu_only:
+        flags += ["-ngl", "0"]
+    return flags
 
 
-def run_perplexity(model_path, perplexity_exe, context_size, flags=None, corpus_file=PERPLEXITY_FILE, timeout=None, cancel_flag=None):
+def run_perplexity(model_path, perplexity_exe, context_size, flags=None, corpus_file=PERPLEXITY_FILE, timeout=None, cancel_flag=None, cpu_only=False):
     corpus_path = _write_temp_corpus(_load_perplexity_corpus(corpus_file))
     output_path = None
     proc = None
     try:
         cmd = (
             [perplexity_exe, "-m", model_path, "-f", corpus_path]
-            + build_perplexity_base_flags(context_size)
+            + build_perplexity_base_flags(context_size, cpu_only=cpu_only)
             + list(flags or [])
         )
         with tempfile.NamedTemporaryFile("w+", delete=False, encoding="utf-8") as output_file:
@@ -190,8 +193,8 @@ def run_perplexity(model_path, perplexity_exe, context_size, flags=None, corpus_
                     pass
 
 
-def run_perplexity_baseline(model_path, perplexity_exe, context_size, corpus_file=PERPLEXITY_FILE, timeout=None, spec_active=False, cancel_flag=None):
-    ppl, code, stderr = run_perplexity(model_path, perplexity_exe, context_size, corpus_file=corpus_file, timeout=timeout, cancel_flag=cancel_flag)
+def run_perplexity_baseline(model_path, perplexity_exe, context_size, corpus_file=PERPLEXITY_FILE, timeout=None, spec_active=False, cancel_flag=None, cpu_only=False):
+    ppl, code, stderr = run_perplexity(model_path, perplexity_exe, context_size, corpus_file=corpus_file, timeout=timeout, cancel_flag=cancel_flag, cpu_only=cpu_only)
     if code == 0 and ppl is not None:
         print(f"[DEBUG] Baseline perplexity parsed: PPL={ppl:.4f} (f16 baseline).")
         return ppl, [], False
@@ -204,7 +207,7 @@ def run_perplexity_baseline(model_path, perplexity_exe, context_size, corpus_fil
         return None, [], False
 
     q8_flags = build_perplexity_cache_flags("q8_0", "q8_0", spec_active=False)
-    ppl, code, stderr = run_perplexity(model_path, perplexity_exe, context_size, flags=q8_flags, corpus_file=corpus_file, timeout=timeout, cancel_flag=cancel_flag)
+    ppl, code, stderr = run_perplexity(model_path, perplexity_exe, context_size, flags=q8_flags, corpus_file=corpus_file, timeout=timeout, cancel_flag=cancel_flag, cpu_only=cpu_only)
     if code == 0 and ppl is not None:
         print(f"[DEBUG] Baseline perplexity parsed: PPL={ppl:.4f} (q8_0 fallback baseline).")
         return ppl, q8_flags, True
@@ -333,7 +336,7 @@ def kill_port(port=BENCH_PORT, proc_holder=None):
 
 def build_server_flags(context_size, t=None, tb=None, b=None, ub=None, fitt=None,
                        cache_k="f16", cache_v="f16", cache_kd="f16", cache_vd="f16",
-                       no_mmap=False, is_base=False,
+                       no_mmap=False, is_base=False, cpu_only=False,
                        mtp=False, spec_draft_n=None, draft_model_path=None, spec_draft_p_min=None):
     flags = [
         "-c", str(context_size),
@@ -345,6 +348,8 @@ def build_server_flags(context_size, t=None, tb=None, b=None, ub=None, fitt=None
         "--no-warmup",
         "--no-mmap"
     ]
+    if cpu_only:
+        flags += ["-ngl", "0"]
     if draft_model_path:
         flags += ["--model-draft", draft_model_path]
 
@@ -489,7 +494,7 @@ def run_benchmark(model_path, server_exe, context_size, proc_holder=None,
                   t=None, tb=None, b=None, ub=None, fitt=None, cache_k="f16", cache_v="f16",
                   cache_kd="f16", cache_vd="f16",
                   no_mmap=False, is_base=False, avg_runs=1, mtp=False, spec_draft_n=None,
-                  draft_model_path=None, spec_draft_p_min=None, cancel_flag=None):
+                  draft_model_path=None, spec_draft_p_min=None, cancel_flag=None, cpu_only=False):
     """Start llama-server, run benchmark, stop server. Returns (pp_tps, tg_tps)."""
     pp_total, tg_total, valid = 0.0, 0.0, 0
 
@@ -522,7 +527,8 @@ def run_benchmark(model_path, server_exe, context_size, proc_holder=None,
             no_mmap=no_mmap, is_base=is_base,
             mtp=mtp, spec_draft_n=spec_draft_n,
             draft_model_path=draft_model_path,
-            spec_draft_p_min=spec_draft_p_min
+            spec_draft_p_min=spec_draft_p_min,
+            cpu_only=cpu_only
         )
 
         try:

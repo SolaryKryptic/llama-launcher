@@ -60,6 +60,7 @@ class OptimisationRequest:
     method: str = METHOD_BAYESIAN
     draft_model_path: Optional[str] = None
     mtp: bool = False
+    cpu_only: bool = False
     trials: int = 40
     avg_runs: int = 1
     seed: int = 42
@@ -103,6 +104,7 @@ class OptimisationService:
             proc_holder=proc_holder,
             draft_model_path=request.draft_model_path,
             mtp=request.mtp,
+            cpu_only=request.cpu_only,
             seed=request.seed,
             time_budget=request.time_budget,
             trial_csv_path=request.trial_csv_path,

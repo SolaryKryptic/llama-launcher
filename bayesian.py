@@ -26,7 +26,7 @@ import optimiser_script as opt
 def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
                               metric_weight=0.1, n_trials=40, avg_runs=1,
                               progress_callback=None, cancel_flag=None, proc_holder=None,
-                              mtp=False, draft_model_path=None, seed=42,
+                              mtp=False, draft_model_path=None, cpu_only=False, seed=42,
                               time_budget=None, trial_csv_path=None,
                               perplexity_exe=None, perplexity_file=opt.PERPLEXITY_FILE,
                               ppl_threshold=opt.PPL_THRESHOLD):
@@ -54,7 +54,7 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
     base_pp, base_tg = opt.run_benchmark(
         model_path, server_exe, context_size,
         proc_holder=proc_holder, is_base=True, avg_runs=avg_runs,
-        draft_model_path=draft_model_path, mtp=is_speculative, cancel_flag=cancel_flag
+        draft_model_path=draft_model_path, mtp=is_speculative, cancel_flag=cancel_flag, cpu_only=cpu_only
     )
     baseline_score = opt.calculate_score(base_pp, base_tg, metric_weight)
     if baseline_score <= 0:
@@ -67,7 +67,7 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
     baseline_ppl_f16_oom = False
     if perplexity_exe:
         baseline_ppl, baseline_ppl_flags, baseline_ppl_f16_oom = opt.run_perplexity_baseline(
-            model_path, perplexity_exe, context_size, corpus_file=perplexity_file, spec_active=is_speculative, cancel_flag=cancel_flag
+            model_path, perplexity_exe, context_size, corpus_file=perplexity_file, spec_active=is_speculative, cancel_flag=cancel_flag, cpu_only=cpu_only
         )
         if baseline_ppl_f16_oom:
             print("[INFO] Baseline f16 perplexity OOM; using q8_0 baseline for quality gate.")
@@ -177,6 +177,8 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
             "cache_v": "f16",
             "cache_type_kd": "f16",
             "cache_type_vd": "f16",
+            "cpu_only": cpu_only,
+            "n_gpu_layers": 0 if cpu_only else None,
             "mtp": is_speculative,
             "spec_enabled": is_speculative,
             "spec_type": "draft-mtp" if is_speculative else "",
@@ -353,7 +355,7 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
                         cache_kd=ckd, cache_vd=cvd,
                         mtp=is_speculative, spec_draft_n=sdn,
                         avg_runs=trial_avg_runs, draft_model_path=draft_model_path,
-                        spec_draft_p_min=sdp, cancel_flag=cancel_flag
+                        spec_draft_p_min=sdp, cancel_flag=cancel_flag, cpu_only=cpu_only
                     )
                 except KeyboardInterrupt:
                     raise
@@ -436,7 +438,7 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         trial.set_user_attr("ppl_cache_vd", None)
         ppl, ppl_code, ppl_stderr = opt.run_perplexity(
             model_path, perplexity_exe, context_size,
-            flags=ppl_flags, corpus_file=perplexity_file, cancel_flag=cancel_flag
+            flags=ppl_flags, corpus_file=perplexity_file, cancel_flag=cancel_flag, cpu_only=cpu_only
         )
         step_name = "DefaultConfig" if trial_role == "default_config" else f"Trial-{trial.number+1}"
         print(f"[DEBUG] Perplexity parsed for {step_name}: PPL={ppl if ppl is not None else 'unparsed'}, baseline={baseline_ppl:.4f}, threshold={ppl_threshold * 100.0:.1f}%.")
@@ -512,6 +514,8 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         "fitt": best_params["fitt"],
         "cache_k": best_params["cache_k"],
         "cache_v": best_params["cache_v"],
+        "cpu_only": cpu_only,
+        "n_gpu_layers": 0 if cpu_only else None,
         "mtp": is_speculative,
         "spec_enabled": is_speculative,
         "spec_type": "draft-mtp" if is_speculative else "",

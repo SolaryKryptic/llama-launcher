@@ -108,8 +108,8 @@ class FlagConfig:
         if self.no_warmup:
             parts.append(" --no-warmup")
 
-        # gpu layers only when set to non negative value, -1 means driver default
-        if self.n_gpu_layers >= 0:
+        # gpu layers only when set to a concrete value, -1 means driver default
+        if self.n_gpu_layers != -1:
             parts.append(f" -ngl {self.n_gpu_layers}")
 
         # flash attention and fit on, only when checked
@@ -468,15 +468,6 @@ class LlamaServerGUI:
         def _on_model_change(*_):
             self.config.model_path = sv_model_path.get()
 
-        def _on_gpu_layers_change(*_):
-            try:
-                raw = iv_auto_gpu.get()
-                val = int(raw) if raw else -1
-                if not (-1 <= val <= 99): return
-                self.config.n_gpu_layers = val
-            except (ValueError, TypeError, tk.TclError):
-                pass
-
         def _on_flash_attn_change(*_):
             try:
                 self.config.flash_attention = bool(iv_flash_attn.get())
@@ -584,7 +575,6 @@ class LlamaServerGUI:
         lv_bool_no_mmap.trace_add("write", lambda *_: (_on_no_mmap_change(), self._update_command()))
         ml_bool_mlock.trace_add("write", lambda *_: (_on_mlock_change(), self._update_command()))
         nw_bool_no_warmup.trace_add("write", lambda *_: (_on_no_warmup_change(), self._update_command()))
-        iv_auto_gpu.trace_add("write", lambda *_: (_on_gpu_layers_change(), self._update_command()))
 
         # Context size toggle and input
 
@@ -1163,6 +1153,7 @@ class LlamaServerGUI:
 
         # Spinbox for GPU layers from -1 to 99
         spinvar = tk.IntVar(value=self.config.n_gpu_layers)
+        self._tk["n_gpu_layers_spinbox"] = spinvar
 
         def _on_spinval(*_):
             try:
@@ -1772,6 +1763,7 @@ class LlamaServerGUI:
             or resolve_perplexity_file(DEFAULT_PERPLEXITY_FILE)
         )
         saved_perplexity_file = resolve_perplexity_file(saved_perplexity_file)
+        saved_cpu_only = bool(config_data.get("optimiser_cpu_only", False))
 
         dlg = Toplevel(self.root)
         dlg.title("Optimiser Settings")
@@ -1809,6 +1801,9 @@ class LlamaServerGUI:
         dlg.protocol("WM_DELETE_WINDOW", _close_optimiser_settings)
 
         ttk.Label(dlg, text="Optimiser Settings", font=("Segoe UI", 11, "bold")).pack(pady=(12, 6))
+
+        cpu_only_var = tk.BooleanVar(value=saved_cpu_only)
+        tk.Checkbutton(dlg, text="CPU-only optimisation (forces -ngl 0 for all optimisation commands)", variable=cpu_only_var).pack(anchor="w", padx=20, pady=(0, 8))
 
         def _spin_row(label, var, from_, to, increment, width=8, fmt=None):
             row = ttk.Frame(dlg)
@@ -1881,6 +1876,7 @@ class LlamaServerGUI:
                 "seed": seed_var.get(),
                 "ppl_threshold_percent": ppl_var.get(),
                 "perplexity_file": perplexity_file_var.get(),
+                "cpu_only": cpu_only_var.get(),
             }
 
         def _save_optimiser_settings(payload=None):
@@ -1895,6 +1891,7 @@ class LlamaServerGUI:
                     "optimiser_avg_runs": payload["avg_runs"],
                     "optimiser_seed": payload["seed"],
                     "optimiser_ppl_threshold_percent": payload["ppl_threshold_percent"],
+                    "optimiser_cpu_only": payload["cpu_only"],
                     "perplexity_file": payload["perplexity_file"],
                 })
                 _save_config(data)
@@ -2122,6 +2119,9 @@ class LlamaServerGUI:
         flash_attention = _safe_bool(final_config.get("flash_attention"), False)
         fit_on = _safe_bool(final_config.get("fit_on"), False)
         use_baseline_command = _safe_bool(final_config.get("use_baseline_command"), False)
+        cpu_only = _safe_bool(final_config.get("cpu_only"), False)
+        final_n_gpu_layers = 0 if cpu_only else final_config.get("n_gpu_layers", self.config.n_gpu_layers)
+        final_n_gpu_layers = self.config.n_gpu_layers if final_n_gpu_layers is None else final_n_gpu_layers
         pct_gain = 0.0 if use_baseline_command else ((best - baseline) / baseline * 100) if baseline > 0 else 0.0
 
         spec_enabled = _safe_bool(final_config.get("spec_enabled"), self.config.spec_enabled) if "spec_enabled" in final_config else bool(final_config.get("mtp") or final_config.get("draft_model_path") or self.config.spec_enabled)
@@ -2146,6 +2146,8 @@ class LlamaServerGUI:
         display_fitt = "--" if use_baseline_command else fitt
 
         extra_flags = []
+        if cpu_only:
+            extra_flags.append("-ngl 0")
         if flash_attention:
             extra_flags.append("-fa on")
         if fit_on:
@@ -2167,7 +2169,9 @@ class LlamaServerGUI:
                 extra_flags.extend([f"-ctkd {cache_type_kd}", f"-ctvd {cache_type_vd}"])
 
         if use_baseline_command:
-            recommended_flags = "Baseline command: no tuned -t/-tb/-b/-ub/-fa/--fit/-fitt/-ct flags were applied."
+            baseline_prefix = "Baseline CPU-only command" if cpu_only else "Baseline command"
+            baseline_suffix = " -ngl 0" if cpu_only else ""
+            recommended_flags = f"{baseline_prefix}: no tuned -t/-tb/-b/-ub/-cache flags were applied.{baseline_suffix}"
         else:
             recommended_flags = " ".join([
                 f"-t {threads}",
@@ -2184,6 +2188,7 @@ class LlamaServerGUI:
         lines = [
             f"Method:           {method}",
             f"Context Size:     {ctx}",
+            f"GPU Layers:       {'0 (CPU-only)' if cpu_only else '--' if use_baseline_command else final_n_gpu_layers}",
             f"Threads:          {display_threads}",
             f"Thread Batch:     {display_thread_batch}",
             f"Batch Size:       {display_batch}",
@@ -2211,7 +2216,7 @@ class LlamaServerGUI:
             f"Improvement:      {pct_gain:.2f}%",
             f"Result:           {'No trial beat baseline; using baseline command.' if use_baseline_command else 'Best PPL-validated trial selected.'}",
             f"",
-            f"{'Baseline command' if use_baseline_command else 'Recommended flags for llama-server'}:",
+            f"{'Baseline CPU-only command' if cpu_only and use_baseline_command else 'Baseline command' if use_baseline_command else 'Recommended flags for llama-server'}:",
             recommended_flags,
         ]
         text_area.insert("1.0", "\n".join(lines))
@@ -2228,7 +2233,12 @@ class LlamaServerGUI:
                 pass
 
         def _apply():
+            final_n_gpu_layers = 0 if cpu_only else -1
             _set_config_attr("ctx_size_value", ctx)
+            self._tk["n_gpu_layers"].set(final_n_gpu_layers)
+            self._tk["n_gpu_layers_spinbox"].set(final_n_gpu_layers)
+            self.config.n_gpu_layers = final_n_gpu_layers
+            self._update_command()
             _set_config_attr("batch_size", batch)
             _set_config_attr("micro_batch_size", micro_batch)
             _set_config_attr("fitt", fitt)
@@ -2416,6 +2426,7 @@ class LlamaServerGUI:
             method=cfg["method"],
             draft_model_path=draft_path,
             mtp=mtp_enabled,
+            cpu_only=cfg["cpu_only"],
             trials=cfg["trials"],
             avg_runs=cfg["avg_runs"],
             seed=cfg["seed"],
