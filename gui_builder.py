@@ -42,6 +42,16 @@ def _save_last_folder(folder):
     data["last_folder"] = folder
     _save_config(data)
 
+def _load_bat_folder():
+    """load last used folder path for .bat save dialog"""
+    return _load_config().get("last_bat_folder", "")
+
+def _save_bat_folder(folder):
+    """save last used folder path for .bat save dialog"""
+    data = _load_config()
+    data["last_bat_folder"] = folder
+    _save_config(data)
+
 
 # data model and command generation
 
@@ -326,6 +336,7 @@ class LlamaServerGUI:
         self.root = root
         self.config = FlagConfig(default_perplexity_file)
         self._last_folder = _load_last_folder()
+        self._last_bat_folder = _load_bat_folder()
         self._last_window_geometries = {}
         self._geometry_save_jobs = {}
 
@@ -2575,7 +2586,7 @@ class LlamaServerGUI:
         if pw:
             dialog.geometry(f"+{self.root.winfo_x() + (self.root.winfo_width() - 300) // 2}+{self.root.winfo_y() + (self.root.winfo_height() - 140) // 2}")
 
-        sv_folder = tk.StringVar(value=self._last_folder or os.path.expanduser("~"))
+        sv_folder = tk.StringVar(value=self._last_bat_folder or os.path.expanduser("~"))
         sv_filename = tk.StringVar(value=default_name)
         result = {"folder": None, "filename": None}
 
@@ -2583,7 +2594,7 @@ class LlamaServerGUI:
             d = filedialog.askdirectory(title="Select Folder")
             if d:
                 sv_folder.set(d)
-                self._last_folder = d
+                self._last_bat_folder = d
 
         def _ok():
             folder = sv_folder.get().strip()
@@ -2637,7 +2648,7 @@ class LlamaServerGUI:
         try:
             with open(filepath, "w", encoding="utf-8") as f:
                 f.write(cmd)
-            _save_last_folder(result["folder"])
+            _save_bat_folder(result["folder"])
             messagebox.showinfo("Saved", f"Saved as:\n{filepath}")
         except Exception as e:
             messagebox.showerror("Error", f"Could not save file:\n{e}")
