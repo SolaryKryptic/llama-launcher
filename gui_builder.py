@@ -53,6 +53,8 @@ class FlagConfig:
         self.no_mmap = False            # disable memory mapped loading
         self.mlock = False              # lock model in ram to reduce swapping
         self.no_warmup = False          # skip warmup run
+        self.mmproj_enabled = False     # include --mmproj when enabled
+        self.mmproj_path = ""           # multimodal projector path
         self.ctx_size_value = 512       # context size value
         self.n_gpu_layers = -1          # -1 means auto detect by gpu driver, valid 0 to 99
 
@@ -107,6 +109,8 @@ class FlagConfig:
             parts.append(" --mlock")
         if self.no_warmup:
             parts.append(" --no-warmup")
+        if self.mmproj_enabled and self.mmproj_path:
+            parts.append(f' --mmproj "{self.mmproj_path}"')
 
         # gpu layers only when set to a concrete value, -1 means driver default
         if self.n_gpu_layers != -1:
@@ -193,6 +197,8 @@ class FlagConfig:
             "no_mmap": self.no_mmap,
             "mlock": self.mlock,
             "no_warmup": self.no_warmup,
+            "mmproj_enabled": self.mmproj_enabled,
+            "mmproj_path": self.mmproj_path,
             "ctx_size_value": self.ctx_size_value,
             "n_gpu_layers": self.n_gpu_layers,
             "host": self.host,
@@ -234,6 +240,7 @@ class FlagConfig:
             "host": "0.0.0.0",
             "spec_type": "",
             "draft_model_path": "",
+            "mmproj_path": "",
             "cache_type_k": "f16",
             "cache_type_v": "f16",
             "cache_type_kd": "f16",
@@ -268,6 +275,7 @@ class FlagConfig:
             "no_mmap": False,
             "mlock": False,
             "no_warmup": False,
+            "mmproj_enabled": False,
             "threads_enabled": False,
             "flash_attention": False,
             "fit_on": False,
@@ -303,6 +311,8 @@ class FlagConfig:
                 else:
                     val = bool(val)
             setattr(self, key, val)
+        if not getattr(self, "mmproj_enabled", False):
+            self.mmproj_path = ""
 
 
 # UI builder —> all ttk widget frames returned as methods
@@ -328,6 +338,8 @@ class LlamaServerGUI:
         lv_bool_no_mmap = tk.BooleanVar(value=False)              # no-mmap toggle state variable (boolean)
         ml_bool_mlock = tk.BooleanVar(value=False)                # mlock toggle state variable (boolean)
         nw_bool_no_warmup = tk.BooleanVar(value=False)            # no-warmup toggle state variable (boolean)
+        iv_mmproj_enabled = tk.BooleanVar(value=False)            # mmproj toggle state variable
+        sv_mmproj_path = tk.StringVar(value="")                   # mmproj path display var
 
         iv_ctx_enabled = tk.BooleanVar(value=False)               # toggle to show ctx-size input
 
@@ -372,6 +384,8 @@ class LlamaServerGUI:
             "no_mmap": lv_bool_no_mmap,
             "mlock": ml_bool_mlock,
             "no_warmup": nw_bool_no_warmup,
+            "mmproj_enabled": iv_mmproj_enabled,
+            "mmproj_path": sv_mmproj_path,
             "ctx_size_enabled": iv_ctx_enabled,
             "flash_attention": iv_flash_attn,
             "fit_on": iv_fit_on,
@@ -405,6 +419,8 @@ class LlamaServerGUI:
             "no_mmap": lv_bool_no_mmap,
             "mlock": ml_bool_mlock,
             "no_warmup": nw_bool_no_warmup,
+            "mmproj_enabled": iv_mmproj_enabled,
+            "mmproj_path": sv_mmproj_path,
             "ctx_size_enabled": iv_ctx_enabled,
             "flash_attention": iv_flash_attn,
             "fit_on": iv_fit_on,
@@ -462,6 +478,26 @@ class LlamaServerGUI:
         def _on_no_warmup_change(*_):
             try:
                 self.config.no_warmup = bool(nw_bool_no_warmup.get())
+            except Exception:
+                pass
+
+        def _on_mmproj_enabled_change(*_):
+            try:
+                enabled = bool(iv_mmproj_enabled.get())
+                self.config.mmproj_enabled = enabled
+                if not enabled:
+                    sv_mmproj_path.set("")
+                    self.config.mmproj_path = ""
+                self._update_mmproj_ui()
+                self._update_command()
+            except Exception:
+                pass
+
+        def _on_mmproj_path_change(*_):
+            try:
+                self.config.mmproj_path = sv_mmproj_path.get()
+                self._update_mmproj_ui()
+                self._update_command()
             except Exception:
                 pass
 
@@ -622,6 +658,8 @@ class LlamaServerGUI:
             except Exception:
                 pass
         iv_spec_enabled.trace_add("write", lambda *_: (self.config.__setattr__("spec_enabled", bool(iv_spec_enabled.get())), self._update_command(), _save_on_close()))
+        iv_mmproj_enabled.trace_add("write", lambda *_: (_on_mmproj_enabled_change(), _save_on_close()))
+        sv_mmproj_path.trace_add("write", lambda *_: (_on_mmproj_path_change(), _save_on_close()))
 
         # Batch size, micro batch, and threads traces
         iv_batch_size.trace_add("write", lambda *_: (_on_batch_size_change(), self._update_command()))
@@ -787,6 +825,13 @@ class LlamaServerGUI:
                 tk["no_warmup"].set(bool(saved_flags["no_warmup"]))
             except (ValueError, TypeError):
                 pass
+        if "mmproj_enabled" in saved_flags:
+            try:
+                tk["mmproj_enabled"].set(bool(saved_flags["mmproj_enabled"]))
+            except (ValueError, TypeError):
+                pass
+        if "mmproj_path" in saved_flags:
+            tk["mmproj_path"].set(str(saved_flags.get("mmproj_path") or ""))
         if "flash_attention" in saved_flags:
             try:
                 tk["flash_attention"].set(bool(saved_flags["flash_attention"]))
@@ -1111,6 +1156,28 @@ class LlamaServerGUI:
         tk.Checkbutton(check_row, text="No-MMAP", variable=lv_bool_no_mmap).pack(side="left")
         tk.Checkbutton(check_row, text="MLock", variable=ml_bool_mlock).pack(side="left", padx=(12, 0))
         tk.Checkbutton(check_row, text="No Warmup", variable=nw_bool_no_warmup).pack(side="left", padx=(12, 0))
+        iv_mmproj_enabled = self._tk["mmproj_enabled"]
+        sv_mmproj_path = self._tk["mmproj_path"]
+        tk.Checkbutton(check_row, text="Use mmproj", variable=iv_mmproj_enabled).pack(side="left", padx=(12, 0))
+
+        self.mmproj_browse_frame = ttk.Frame(check_row)
+        self.mmproj_browse_frame.pack(side="left", padx=(6, 0))
+        ttk.Button(self.mmproj_browse_frame, text="Browse mmproj...", command=self._browse_mmproj).pack(side="left", padx=(0, 4))
+        self.mmproj_path_label = tk.Label(self.mmproj_browse_frame, text="", anchor="w", justify="left", foreground="#666")
+        self.mmproj_path_label.pack(side="left", fill="x", expand=True)
+        self._update_mmproj_ui()
+
+        def _update_mmproj_label(*_):
+            full_path = sv_mmproj_path.get()
+            if not full_path:
+                display = ""
+            else:
+                name = os.path.basename(full_path)
+                display = "Currently selected: " + (name.rsplit(".gguf", 1)[0] if name.lower().endswith(".gguf") else name)
+            self.mmproj_path_label.config(text=display)
+
+        sv_mmproj_path.trace_add("write", _update_mmproj_label)
+        _update_mmproj_label()
 
 
     def _section_context_gpu(self, parent):
@@ -1679,6 +1746,18 @@ class LlamaServerGUI:
         )
         info_label.pack(fill="x")
 
+    def _update_mmproj_ui(self):
+        """show or hide the mmproj browse controls."""
+        if not hasattr(self, "mmproj_browse_frame"):
+            return
+        if self.config.mmproj_enabled:
+            self.mmproj_browse_frame.pack(side="left", padx=(6, 0))
+        else:
+            self.mmproj_browse_frame.pack_forget()
+            if self.config.mmproj_path:
+                self.config.mmproj_path = ""
+                self._tk["mmproj_path"].set("")
+
     def _browse_model(self):
         """open file dialog to select gguf model file"""
         initialdir = self._last_folder if self._last_folder and os.path.isdir(self._last_folder) else os.path.expanduser("~")
@@ -1690,6 +1769,23 @@ class LlamaServerGUI:
         if path:
             self.config.model_path = path
             self._tk["model_path"].set(path)
+            self._last_folder = os.path.dirname(path)
+            _save_last_folder(self._last_folder)
+            self._update_command()
+
+    def _browse_mmproj(self):
+        """open file dialog to select mmproj gguf file"""
+        initialdir = self._last_folder if self._last_folder and os.path.isdir(self._last_folder) else os.path.expanduser("~")
+        path = filedialog.askopenfilename(
+            title="Select mmproj GGUF File",
+            filetypes=[("GGUF files", "*.gguf"), ("All files", "*.*")],
+            initialdir=initialdir,
+        )
+        if path:
+            self.config.mmproj_enabled = True
+            self.config.mmproj_path = path
+            self._tk["mmproj_enabled"].set(True)
+            self._tk["mmproj_path"].set(path)
             self._last_folder = os.path.dirname(path)
             _save_last_folder(self._last_folder)
             self._update_command()
