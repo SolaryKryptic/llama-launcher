@@ -2609,7 +2609,7 @@ class LlamaServerGUI:
         row.pack(fill="x", pady=2)
         ttk.Label(row, text="Folder:").pack(side="left")
         ttk.Entry(row, textvariable=sv_folder, width=35).pack(side="left", fill="x", expand=True, padx=(4, 4))
-        ttk.Button(row, text="Browse local files...", command=_browse_folder).pack(side="left")
+        ttk.Button(row, text="Browse save location...", command=_browse_folder).pack(side="left")
 
         # Filename row
         row = ttk.Frame(body)
