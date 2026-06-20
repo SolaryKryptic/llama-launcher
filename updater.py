@@ -13,7 +13,7 @@ def get_current_version():
     if match:
         return match.group(1)
     # Fallback version for when you run the raw .py file in your IDE
-    return "1.3.4"
+    return "1.3.5"
 
 CURRENT_VERSION = get_current_version()
 
