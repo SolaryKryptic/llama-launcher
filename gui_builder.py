@@ -369,7 +369,7 @@ class LlamaServerGUI:
         iv_thread_batch = tk.IntVar(value=-1)
 
         # Cache type K and V dropdowns
-        CACHE_TYPES = ["f16", "f32", "q8_0", "q5_0", "q4_0"]
+        CACHE_TYPES = ["f16", "q8_0", "q5_0", "q4_0"]
         sv_cache_k = tk.StringVar(value="f16")
         sv_cache_v = tk.StringVar(value="f16")
         sv_cache_kd = tk.StringVar(value="f16")
@@ -1871,6 +1871,9 @@ class LlamaServerGUI:
         )
         saved_perplexity_file = resolve_perplexity_file(saved_perplexity_file)
         saved_cpu_only = bool(config_data.get("optimiser_cpu_only", False))
+        saved_lock_cache_quant = bool(config_data.get("optimiser_lock_cache_quant", False))
+        saved_lock_cache_k = config_data.get("optimiser_lock_cache_k", self.config.cache_type_k)
+        saved_lock_cache_v = config_data.get("optimiser_lock_cache_v", self.config.cache_type_v)
 
         dlg = Toplevel(self.root)
         dlg.title("Optimiser Settings")
@@ -1973,6 +1976,34 @@ class LlamaServerGUI:
         perplexity_file_var = tk.StringVar(value=saved_perplexity_file)
         _path_picker_row("Corpus File:", perplexity_file_var)
 
+        lock_cache_var = tk.BooleanVar(value=saved_lock_cache_quant)
+        tk.Checkbutton(dlg, text="Lock KV cache quantization to selected values", variable=lock_cache_var).pack(anchor="w", padx=20, pady=(0, 4))
+
+        bottom_frame = ttk.Frame(dlg)
+        bottom_frame.pack(fill="x", padx=20)
+
+        cache_lock_frame = ttk.Frame(bottom_frame)
+        CACHE_TYPES = ["f16", "q8_0", "q5_0", "q4_0"]
+        if str(saved_lock_cache_k) not in CACHE_TYPES:
+            saved_lock_cache_k = self.config.cache_type_k
+        if str(saved_lock_cache_v) not in CACHE_TYPES:
+            saved_lock_cache_v = self.config.cache_type_v
+        sv_locked_cache_k = tk.StringVar(value=str(saved_lock_cache_k))
+        sv_locked_cache_v = tk.StringVar(value=str(saved_lock_cache_v))
+
+        ttk.Label(cache_lock_frame, text="Cache K:").pack(side="left")
+        ttk.Combobox(cache_lock_frame, textvariable=sv_locked_cache_k, values=CACHE_TYPES, width=8, state="readonly").pack(side="left", padx=(2, 8))
+        ttk.Label(cache_lock_frame, text="Cache V:").pack(side="left")
+        ttk.Combobox(cache_lock_frame, textvariable=sv_locked_cache_v, values=CACHE_TYPES, width=8, state="readonly").pack(side="left", padx=(2, 0))
+
+        def _on_lock_cache_toggle(*_):
+            if lock_cache_var.get():
+                cache_lock_frame.pack(fill="x")
+            else:
+                cache_lock_frame.pack_forget()
+        lock_cache_var.trace_add("write", _on_lock_cache_toggle)
+        _on_lock_cache_toggle()
+
         def _get_optimiser_settings_payload():
             return {
                 "method": method_var.get(),
@@ -1984,6 +2015,9 @@ class LlamaServerGUI:
                 "ppl_threshold_percent": ppl_var.get(),
                 "perplexity_file": perplexity_file_var.get(),
                 "cpu_only": cpu_only_var.get(),
+                "lock_cache_quant": lock_cache_var.get(),
+                "cache_k_locked": sv_locked_cache_k.get() if lock_cache_var.get() else None,
+                "cache_v_locked": sv_locked_cache_v.get() if lock_cache_var.get() else None,
             }
 
         def _save_optimiser_settings(payload=None):
@@ -2000,6 +2034,9 @@ class LlamaServerGUI:
                     "optimiser_ppl_threshold_percent": payload["ppl_threshold_percent"],
                     "optimiser_cpu_only": payload["cpu_only"],
                     "perplexity_file": payload["perplexity_file"],
+                    "optimiser_lock_cache_quant": payload["lock_cache_quant"],
+                    "optimiser_lock_cache_k": payload.get("cache_k_locked"),
+                    "optimiser_lock_cache_v": payload.get("cache_v_locked"),
                 })
                 _save_config(data)
             except Exception:
@@ -2534,6 +2571,9 @@ class LlamaServerGUI:
             draft_model_path=draft_path,
             mtp=mtp_enabled,
             cpu_only=cfg["cpu_only"],
+            lock_cache_quant=cfg.get("lock_cache_quant", False),
+            cache_k_locked=cfg.get("cache_k_locked"),
+            cache_v_locked=cfg.get("cache_v_locked"),
             trials=cfg["trials"],
             avg_runs=cfg["avg_runs"],
             seed=cfg["seed"],

@@ -29,7 +29,8 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
                               mtp=False, draft_model_path=None, cpu_only=False, seed=42,
                               time_budget=None, trial_csv_path=None,
                               perplexity_exe=None, perplexity_file=opt.PERPLEXITY_FILE,
-                              ppl_threshold=opt.PPL_THRESHOLD):
+                              ppl_threshold=opt.PPL_THRESHOLD,
+                              lock_cache_quant=False, cache_k_locked=None, cache_v_locked=None):
     """Run an Optuna (TPE) search over the same parameter families used by
     `optimiser_script.run_benchmark`. Returns a final_config dict
     matching the existing optimiser's returned structure, or None on failure.
@@ -87,6 +88,23 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
     if baseline_ppl_f16_oom:
         cache_k_choices = [t for t in cache_k_choices if t != "f16"] or ["q8_0"]
         cache_v_choices = [t for t in cache_v_choices if t != "f16"] or ["q8_0"]
+    if lock_cache_quant:
+        cache_k_locked = str(cache_k_locked or "")
+        cache_v_locked = str(cache_v_locked or "")
+        invalid_locked_cache = []
+        if not cache_k_locked:
+            invalid_locked_cache.append("Cache K is empty")
+        elif cache_k_locked not in cache_k_choices:
+            invalid_locked_cache.append(f"Cache K {cache_k_locked!r} is not available")
+        if not cache_v_locked:
+            invalid_locked_cache.append("Cache V is empty")
+        elif cache_v_locked not in cache_v_choices:
+            invalid_locked_cache.append(f"Cache V {cache_v_locked!r} is not available")
+        if invalid_locked_cache:
+            print("[ERROR] Invalid locked KV cache quantization values:")
+            for item in invalid_locked_cache:
+                print(f"[ERROR]   {item}")
+            return None
     cache_kd_choices = cache_k_choices if is_speculative else None
     cache_vd_choices = cache_v_choices if is_speculative else None
     spec_draft_n_choices = params.get("spec_draft_n", list(range(1, 5))) if is_speculative else None
@@ -267,6 +285,10 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
                     "thread_batch_valid": trial.user_attrs.get("thread_batch_valid", False),
                 }
                 row.update({f"param_{k}": v for k, v in trial.params.items()})
+                row["param_cache_k"] = trial.user_attrs.get("cache_k", row.get("param_cache_k"))
+                row["param_cache_v"] = trial.user_attrs.get("cache_v", row.get("param_cache_v"))
+                row["param_cache_kd"] = trial.user_attrs.get("cache_kd", row.get("param_cache_kd"))
+                row["param_cache_vd"] = trial.user_attrs.get("cache_vd", row.get("param_cache_vd"))
                 row["param_threads"] = trial.user_attrs.get("threads", row.get("param_threads"))
                 row["param_thread_batch"] = trial.user_attrs.get("thread_batch", row.get("param_thread_batch"))
                 writer = csv.DictWriter(trial_log, fieldnames=csv_fieldnames, extrasaction="ignore")
@@ -294,8 +316,8 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         ub_candidate = trial.suggest_categorical("micro_batch", micro_batch_choices)
         ub = min(ub_candidate, b)
         fitt = trial.suggest_categorical("fitt", fitt_choices)
-        ck = trial.suggest_categorical("cache_k", cache_k_choices)
-        cv = trial.suggest_categorical("cache_v", cache_v_choices)
+        ck = cache_k_locked if lock_cache_quant else trial.suggest_categorical("cache_k", cache_k_choices)
+        cv = cache_v_locked if lock_cache_quant else trial.suggest_categorical("cache_v", cache_v_choices)
         ckd = trial.suggest_categorical("cache_kd", cache_kd_choices) if is_speculative else None
         cvd = trial.suggest_categorical("cache_vd", cache_vd_choices) if is_speculative else None
         sdn = trial.suggest_categorical("spec_draft_n", spec_draft_n_choices) if is_speculative else None
@@ -328,6 +350,10 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
             "cache_kd": ckd,
             "cache_vd": cvd,
         }
+        trial.set_user_attr("cache_k", ck)
+        trial.set_user_attr("cache_v", cv)
+        trial.set_user_attr("cache_kd", ckd)
+        trial.set_user_attr("cache_vd", cvd)
 
         def penalized_failure_score(raw_score=None):
             if raw_score is None:
@@ -503,6 +529,8 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
     best_score = best_quality_score
 
     best_params = best_trial.params
+    final_cache_k = best_trial.user_attrs.get("cache_k", best_params.get("cache_k", baseline_cache["cache_k"]))
+    final_cache_v = best_trial.user_attrs.get("cache_v", best_params.get("cache_v", baseline_cache["cache_v"]))
     final_threads = best_trial.user_attrs.get("threads", best_params.get("threads"))
     final_thread_batch = best_trial.user_attrs.get("thread_batch", best_params.get("thread_batch"))
 
@@ -512,8 +540,8 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         "batch": best_params["batch"],
         "micro_batch": best_params.get("micro_batch", best_params["batch"]),
         "fitt": best_params["fitt"],
-        "cache_k": best_params["cache_k"],
-        "cache_v": best_params["cache_v"],
+        "cache_k": final_cache_k,
+        "cache_v": final_cache_v,
         "cpu_only": cpu_only,
         "n_gpu_layers": 0 if cpu_only else None,
         "mtp": is_speculative,

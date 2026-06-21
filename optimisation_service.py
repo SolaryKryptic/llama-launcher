@@ -61,6 +61,9 @@ class OptimisationRequest:
     draft_model_path: Optional[str] = None
     mtp: bool = False
     cpu_only: bool = False
+    lock_cache_quant: bool = False
+    cache_k_locked: Optional[str] = None
+    cache_v_locked: Optional[str] = None
     trials: int = 40
     avg_runs: int = 1
     seed: int = 42
@@ -105,6 +108,9 @@ class OptimisationService:
             draft_model_path=request.draft_model_path,
             mtp=request.mtp,
             cpu_only=request.cpu_only,
+            lock_cache_quant=request.lock_cache_quant,
+            cache_k_locked=request.cache_k_locked,
+            cache_v_locked=request.cache_v_locked,
             seed=request.seed,
             time_budget=request.time_budget,
             trial_csv_path=request.trial_csv_path,
