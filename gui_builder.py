@@ -94,6 +94,7 @@ class FlagConfig:
         self.cache_type_v = "f16"      # kv cache type v
         self.cache_type_kd = "f16"     # draft-mtp cache type k
         self.cache_type_vd = "f16"     # draft-mtp cache type v
+        self.parallel = 1              # parallel decoding (-np)
 
         self.perplexity_file = resolve_perplexity_file(default_perplexity_file or DEFAULT_PERPLEXITY_FILE)
         self.ppl_threshold_percent = 3.0
@@ -172,7 +173,8 @@ class FlagConfig:
         port = max(1, min(int(str(self.port)), 65535))
         parts.append(f" --host {host}")
         parts.append(f" --port {port}")
-        parts.append(f" --cache-ram {self.cache_ram}"),
+        parts.append(f" --cache-ram {self.cache_ram}")
+        parts.append(f" -np {self.parallel}")
 
         # sampling params always included
         temp = max(0.05, min(float(str(self.temperature)), 2.0))
@@ -214,6 +216,7 @@ class FlagConfig:
             "host": self.host,
             "port": self.port,
             "cache_ram": self.cache_ram,
+            "parallel": self.parallel,
             "num_threads": self.num_threads,
             "threads_enabled": self.threads_enabled,
             "flash_attention": self.flash_attention,
@@ -261,6 +264,7 @@ class FlagConfig:
             "ctx_size_value": 512,
             "n_gpu_layers": -1,
             "cache_ram": 8000,
+            "parallel": 1,
             "num_threads": os.cpu_count() or 4,
             "fitt": 1024,
             "spec_draft_n_max": 0,
@@ -378,6 +382,7 @@ class LlamaServerGUI:
         sv_host = tk.StringVar(value="0.0.0.0")                   # server host binding address
         iv_port = tk.IntVar(value=8080)                           # HTTP port (1-65535)
         iv_cache_ram = tk.IntVar(value=8000)                      # cache RAM in GB (--cache-ram)
+        iv_parallel = tk.IntVar(value=1)                          # parallel decoding (-np)
 
         iv_threads_enabled = tk.BooleanVar(value=False)           # toggle to show threads input
         iv_threads_val = tk.IntVar(value=os.cpu_count() or 4)     # thread count default from CPU cores
@@ -413,6 +418,7 @@ class LlamaServerGUI:
             "host": sv_host,
             "port": iv_port,
             "cache_ram": iv_cache_ram,
+            "parallel": iv_parallel,
             "threads_enabled": iv_threads_enabled,
             "num_threads": iv_threads_val,
             "temperature": sv_temp,
@@ -448,6 +454,7 @@ class LlamaServerGUI:
             "host": sv_host,
             "port": iv_port,
             "cache_ram": iv_cache_ram,
+            "parallel": iv_parallel,
             "threads_enabled": iv_threads_enabled,
             "num_threads": iv_threads_val,
             "temperature": sv_temp,
@@ -938,6 +945,11 @@ class LlamaServerGUI:
         if "cache_ram" in saved_flags:
             try:
                 tk["cache_ram"].set(int(saved_flags["cache_ram"]))
+            except (ValueError, TypeError):
+                pass
+        if "parallel" in saved_flags:
+            try:
+                tk["parallel"].set(int(saved_flags["parallel"]))
             except (ValueError, TypeError):
                 pass
         if "temperature" in saved_flags:
@@ -1605,6 +1617,30 @@ class LlamaServerGUI:
 
         entry_c = ttk.Spinbox(cache_frame, from_=0, to=999999, textvariable=iv_cache_ram, width=8)
         entry_c.pack(side="left")
+
+        # Parallel spinbox
+        iv_parallel = self._tk["parallel"]
+        parallel_frame = ttk.Frame(net_row)
+        parallel_frame.pack(side="left", padx=(24, 0))
+        ttk.Label(parallel_frame, text="Parallel:").pack(side="left", padx=(0, 4))
+
+        def _parallel_safe(*_):
+            try:
+                raw = iv_parallel.get()
+                val = int(raw) if raw else 1
+                if not (1 <= val <= 128): return
+                iv_parallel.set(max(1, min(val, 128)))
+                self.config.parallel = max(1, min(val, 128))
+            except (ValueError, TypeError, tk.TclError):
+                pass
+        def _parallel_cmd(*_):
+            try: self._update_command()
+            except Exception:
+                pass
+        iv_parallel.trace_add("write", lambda *_: (_parallel_safe(), _parallel_cmd()))
+
+        entry_np = ttk.Spinbox(parallel_frame, from_=1, to=128, textvariable=iv_parallel, width=5)
+        entry_np.pack(side="left")
 
 
     def _section_sampling_params(self, parent):
