@@ -145,7 +145,7 @@ class FlagConfig:
             parts.append(f" -tb {self.thread_batch}")
 
         # speculative decoding only when enabled
-        if self.spec_enabled:
+        if self.spec_enabled and self.spec_type:
             parts.append(f" --spec-type {self.spec_type}")
             if self.spec_draft_n_max > 0:
                 parts.append(f" --spec-draft-n-max {self.spec_draft_n_max}")
@@ -1384,7 +1384,7 @@ class LlamaServerGUI:
                 types.append("ngram-mod")
             if iv_spec_draft.get():
                 types.append("draft-mtp")
-            self.config.spec_type = ",".join(types) if types else "ngram-mod"
+            self.config.spec_type = ",".join(types) if types else ""
 
         def _on_spec_toggle(*_):
             try:
