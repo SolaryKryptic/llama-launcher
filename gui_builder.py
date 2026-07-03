@@ -191,7 +191,7 @@ class FlagConfig:
 
         return "".join(parts)
 
-    @staticmethod
+    @staticmethod #regular function
     def _safe_int(name, default):
         """safely convert value to int, return default on failure"""
         try:
@@ -473,7 +473,7 @@ class LlamaServerGUI:
         except Exception:
             self._hw = {"CPU": "Unknown", "GPU": "Unknown", "VRAM": "Unknown", "RAM": "Unknown", "CPU_CORES": 0, "CPU_THREADS": 0}
 
-        # Change handlers — update config state and trigger command rebuild
+        # Change handlers, update config state and trigger command rebuild
         def _on_no_mmap_change(*_):
             try:
                 self.config.no_mmap = bool(lv_bool_no_mmap.get())
@@ -710,7 +710,7 @@ class LlamaServerGUI:
         self.root.destroy()
 
     def _restore_window_geometry(self, win, config_key, default_width, default_height):
-        """Restore Toplevel geometry from saved config or center default window."""
+        """Restore Toplevel geometry from saved config or center default window"""
         config_data = _load_config()
         saved_geometry = config_data.get(config_key)
         if isinstance(saved_geometry, str) and saved_geometry:
@@ -733,7 +733,7 @@ class LlamaServerGUI:
         win.geometry(f"{default_width}x{default_height}+{x}+{y}")
 
     def _ensure_min_geometry(self, win, min_width, min_height):
-        """Force a Toplevel to at least min_width x min_height."""
+        """Force a Toplevel to at least min_width x min_height"""
         geom = win.geometry()
         match = re.match(r"(\d+)x(\d+)", geom)
         if not match:
@@ -763,7 +763,7 @@ class LlamaServerGUI:
             return None
 
     def _save_window_geometry(self, config_key, win):
-        """Save current Toplevel geometry to config."""
+        """Save current Toplevel geometry to config"""
         try:
             job_id = getattr(self, "_geometry_save_jobs", {}).get(config_key)
             if job_id is not None:

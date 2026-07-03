@@ -26,7 +26,7 @@ import optimiser_script as opt
 def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
                               metric_weight=0.1, n_trials=40, avg_runs=1,
                               progress_callback=None, cancel_flag=None, proc_holder=None,
-                              mtp=False, draft_model_path=None, cpu_only=False, seed=42,
+                              mtp=False, draft_model_path=None, cpu_only=False, seed=123,
                               time_budget=None, trial_csv_path=None,
                               perplexity_exe=None, perplexity_file=opt.PERPLEXITY_FILE,
                               ppl_threshold=opt.PPL_THRESHOLD,
