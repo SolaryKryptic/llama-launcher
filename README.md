@@ -1,6 +1,6 @@
 # llama-launcher
 
-A Python GUI application for generating [llama.cpp](https://github.com/ggerganov/llama.cpp) server commands. You must have llama.cpp already built on your device, this project does not come with llama.cpp!
+A Python GUI application for generating [llama.cpp](https://github.com/ggerganov/llama.cpp) server commands. Has a machine learning driven parameter optimisation feature. You must have llama.cpp already built on your device, this project does not come with llama.cpp!
 
 ## Overview
 
