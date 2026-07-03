@@ -84,5 +84,4 @@ llama-launcher/
 ├── llama_gui_data.json  # Auto-generated config (saved settings)
 ├── Moby Dick.txt        # Bundled default perplexity corpus
 └── updater.py
-
 ```
