@@ -67,6 +67,7 @@ class OptimisationRequest:
     trials: int = 40
     avg_runs: int = 1
     seed: int = 42
+    verify_picks: int = 2
     time_budget: Optional[float] = None
     trial_csv_path: Optional[str] = None
 
@@ -114,4 +115,5 @@ class OptimisationService:
             seed=request.seed,
             time_budget=request.time_budget,
             trial_csv_path=request.trial_csv_path,
+            verify_picks=request.verify_picks,
         )

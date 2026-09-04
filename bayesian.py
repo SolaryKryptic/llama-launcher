@@ -30,7 +30,8 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
                               time_budget=None, trial_csv_path=None,
                               perplexity_exe=None, perplexity_file=opt.PERPLEXITY_FILE,
                               ppl_threshold=opt.PPL_THRESHOLD,
-                              lock_cache_quant=False, cache_k_locked=None, cache_v_locked=None):
+                              lock_cache_quant=False, cache_k_locked=None, cache_v_locked=None,
+                              verify_picks=2):
     """Run an Optuna (TPE) search over the same parameter families used by
     `optimiser_script.run_benchmark`. Returns a final_config dict
     matching the existing optimiser's returned structure, or None on failure.
@@ -114,8 +115,9 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         "cache_kd": "q8_0" if is_speculative and baseline_ppl_f16_oom else "f16",
         "cache_vd": "q8_0" if is_speculative and baseline_ppl_f16_oom else "f16",
     }
-    best_quality_score = baseline_score
-    best_quality_trial = None
+    best_speed_score = baseline_score
+    best_accepted_trial = None
+    best_accepted_ppl = None
 
     default_b = 512 if 512 in batch_choices else batch_choices[0]
     default_ub = min(default_b, 512 if 512 in micro_batch_choices else micro_batch_choices[0])
@@ -209,10 +211,16 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
             "baseline_tg": f"{base_tg:.2f}",
             "baseline_score": f"{baseline_score:.2f}",
             "best_score": f"{baseline_score:.2f}",
-            "best_quality_score": f"{best_quality_score:.2f}",
+            "best_quality_score": f"{baseline_score:.2f}",
             "best_pp": f"{base_pp:.2f}",
             "best_tg": f"{base_tg:.2f}",
             "best_ppl": None,
+            "best_trial_number": None,
+            "verified_pp": f"{base_pp:.2f}",
+            "verified_tg": f"{base_tg:.2f}",
+            "verified_score": f"{baseline_score:.2f}",
+            "best_pp_spread": 0.0,
+            "best_tg_spread": 0.0,
             "baseline_ppl": baseline_ppl,
             "ppl_threshold": ppl_threshold,
         }
@@ -238,7 +246,8 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         trial_log = open(trial_csv_path, "w", newline="", encoding="utf-8")
 
     csv_fieldnames = [
-        "number", "state", "value", "pp", "tg", "best_quality_score", "error",
+        "number", "state", "value", "pp", "tg", "pp_spread", "tg_spread",
+        "reps_valid", "temp_c", "best_quality_score", "error",
         "discarded_by", "perplexity", "ppl_validated", "ppl_skipped_reason",
         "ppl_cache_k", "ppl_cache_v", "ppl_cache_kd", "ppl_cache_vd",
         "trial_role", "thread_pair", "thread_batch", "thread_batch_valid",
@@ -251,7 +260,7 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
     def callback(study, trial):
         """Called after each trial completes. Stop on time budget only."""
         try:
-            current_best = best_quality_score
+            current_best = best_speed_score
             display_best = current_best
 
             if time_budget and (time.time() - start_time) >= time_budget:
@@ -269,7 +278,11 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
                     "value": trial.value,
                     "pp": trial.user_attrs.get("pp"),
                     "tg": trial.user_attrs.get("tg"),
-                    "best_quality_score": best_quality_score,
+                    "pp_spread": trial.user_attrs.get("pp_spread", 0.0),
+                    "tg_spread": trial.user_attrs.get("tg_spread", 0.0),
+                    "reps_valid": trial.user_attrs.get("reps_valid", avg_runs),
+                    "temp_c": trial.user_attrs.get("temp_c"),
+                    "best_quality_score": best_speed_score,
                     "error": trial.user_attrs.get("error"),
                     "discarded_by": trial.user_attrs.get("discarded_by"),
                     "perplexity": trial.user_attrs.get("perplexity"),
@@ -300,7 +313,10 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
             print(f"[DEBUG] Bayesian callback failed: {e}")
 
     def objective(trial):
-        nonlocal best_quality_score, best_quality_trial
+        # Speed-only objective with a per-trial PPL incumbency gate. TPE always
+        # receives the raw benchmark speed; PPL only decides whether a faster
+        # trial may replace the current accepted best.
+        nonlocal best_speed_score, best_accepted_trial, best_accepted_ppl
         if cancel_flag and cancel_flag[0]:
             opt.kill_port(opt.BENCH_PORT, proc_holder)
             trial.study.stop()
@@ -340,39 +356,25 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         trial_role = "default_config" if all(effective_params.get(k) == v for k, v in baseline_effective.items()) else "trial"
         trial.set_user_attr("trial_role", trial_role)
 
-        cache_quant_changed = opt.cache_differs_from_baseline(
-            {"cache_k": ck, "cache_v": cv, "cache_kd": ckd, "cache_vd": cvd},
-            baseline_cache
-        )
-        candidate_cache = {
-            "cache_k": ck,
-            "cache_v": cv,
-            "cache_kd": ckd,
-            "cache_vd": cvd,
-        }
         trial.set_user_attr("cache_k", ck)
         trial.set_user_attr("cache_v", cv)
         trial.set_user_attr("cache_kd", ckd)
         trial.set_user_attr("cache_vd", cvd)
 
-        def penalized_failure_score(raw_score=None):
-            if raw_score is None:
-                return -1_000_000.0
-            return -1_000_000.0 + raw_score
-
         def report_progress(last_score):
             if progress_callback:
                 step_name = "DefaultConfig" if trial_role == "default_config" else f"Trial-{trial.number+1}"
-                progress_callback(trial.number + 1, n_trials, step_name, last_score, best_quality_score, baseline_score)
+                progress_callback(trial.number + 1, n_trials, step_name, last_score, best_speed_score, baseline_score)
 
         def benchmark_with_retry():
             last_error = None
+            last_stats = {}
             for attempt in range(1, 4):
                 if cancel_flag and cancel_flag[0]:
                     raise optuna.TrialPruned()
 
                 try:
-                    trial_avg_runs = avg_runs
+                    stats = {}
                     pp, tg = opt.run_benchmark(
                         model_path, server_exe, context_size,
                         proc_holder=proc_holder,
@@ -380,9 +382,11 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
                         cache_k=ck, cache_v=cv,
                         cache_kd=ckd, cache_vd=cvd,
                         mtp=is_speculative, spec_draft_n=sdn,
-                        avg_runs=trial_avg_runs, draft_model_path=draft_model_path,
-                        spec_draft_p_min=sdp, cancel_flag=cancel_flag, cpu_only=cpu_only
+                        avg_runs=avg_runs, draft_model_path=draft_model_path,
+                        spec_draft_p_min=sdp, cancel_flag=cancel_flag, cpu_only=cpu_only,
+                        stats_out=stats,
                     )
+                    last_stats = stats
                 except KeyboardInterrupt:
                     raise
                 except Exception as e:
@@ -399,88 +403,102 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
                         time.sleep(3)
                     continue
 
-                return pp, tg, None
+                return pp, tg, last_stats, None
 
-            return 0.0, 0.0, f"all 3 attempts failed; last: {last_error}"
+            return 0.0, 0.0, last_stats, f"all 3 attempts failed; last: {last_error}"
 
-        pp, tg, bench_error = benchmark_with_retry()
+        pp, tg, rep_stats, bench_error = benchmark_with_retry()
         if cancel_flag and cancel_flag[0]:
             opt.kill_port(opt.BENCH_PORT, proc_holder)
             raise optuna.TrialPruned()
         if bench_error:
-            failure_score = penalized_failure_score()
             trial.set_user_attr("error", bench_error)
             trial.set_user_attr("discarded_by", "benchmark_failure")
-            report_progress(failure_score)
-            return failure_score
+            trial.set_user_attr("pp", 0.0)
+            trial.set_user_attr("tg", 0.0)
+            trial.set_user_attr("pp_spread", 0.0)
+            trial.set_user_attr("tg_spread", 0.0)
+            trial.set_user_attr("reps_valid", 0)
+            report_progress(-1.0)
+            return -1.0
 
         score = opt.calculate_score(pp, tg, metric_weight)
         step_name = "DefaultConfig" if trial_role == "default_config" else f"Trial-{trial.number+1}"
         print(f"[DEBUG] Speed score for {step_name}: pp={pp:.2f}, tg={tg:.2f}, score={score:.2f}, baseline={baseline_score:.2f}, metric_weight={metric_weight:.2f}.")
 
-        # Save prompt processing and text generation speeds to avoid a final verification run
+        # Save speeds + spread for reporting; incumbency is decided below.
         trial.set_user_attr("pp", pp)
         trial.set_user_attr("tg", tg)
+        trial.set_user_attr("pp_spread", rep_stats.get("pp_spread", 0.0))
+        trial.set_user_attr("tg_spread", rep_stats.get("tg_spread", 0.0))
+        trial.set_user_attr("reps_valid", rep_stats.get("reps_valid", avg_runs))
+        trial.set_user_attr("ppl_validated", False)
 
-        def update_best_quality(last_score):
-            nonlocal best_quality_score, best_quality_trial
-            if last_score > best_quality_score:
-                best_quality_score = last_score
-                best_quality_trial = trial
-
-        step_name = "DefaultConfig" if trial_role == "default_config" else f"Trial-{trial.number+1}"
-        if not cache_quant_changed:
-            trial.set_user_attr("ppl_skipped_reason", "cache_matches_baseline")
-            trial.set_user_attr("ppl_validated", True)
-            print(f"[INFO] {step_name} matches baseline cache quantisation; skipping PPL benchmark and allowing score to update best_quality_score.")
-            update_best_quality(score)
+        # Per-trial incumbency gate: only a strictly faster trial can replace
+        # the accepted best, and only if it passes the PPL quality gate (or its
+        # cache matches the baseline so no PPL is needed). The returned
+        # objective stays the raw speed either way.
+        if not opt.needs_quality_check(score, best_speed_score):
+            trial.set_user_attr("ppl_skipped_reason", "not_faster_than_current_best")
             report_progress(score)
             return score
 
-        if score <= best_quality_score:
-            trial.set_user_attr("ppl_skipped_reason", "not_faster_than_current_best")
-            print(f"[INFO] {step_name} did not beat current PPL-validated best score; skipping PPL benchmark: score {score:.2f}, best_quality {best_quality_score:.2f}.")
+        needs_ppl = opt.cache_differs_from_baseline(
+            {"cache_k": ck, "cache_v": cv, "cache_kd": ckd, "cache_vd": cvd},
+            baseline_cache,
+        )
+        if not needs_ppl:
+            trial.set_user_attr("ppl_skipped_reason", "cache_matches_baseline")
+            trial.set_user_attr("ppl_validated", True)
+            print(f"[INFO] {step_name} matches baseline cache quantisation; "
+                  f"no PPL needed, accepted as best on speed.")
+            best_speed_score = score
+            best_accepted_trial = trial
+            best_accepted_ppl = None
             report_progress(score)
             return score
 
         if baseline_ppl is None or not perplexity_exe:
-            failure_score = penalized_failure_score(score)
             trial.set_user_attr("ppl_skipped_reason", "baseline_ppl_unavailable")
-            trial.set_user_attr("discarded_by", "baseline_ppl_unavailable")
-            print(f"[INFO] {step_name} beat current PPL-validated best score but baseline PPL is unavailable; returning penalty score.")
-            report_progress(failure_score)
-            return failure_score
+            print(f"[INFO] {step_name} is faster but baseline PPL is unavailable; "
+                  f"kept out of incumbency, previous best retained.")
+            report_progress(score)
+            return score
 
         ppl_flags = list(baseline_ppl_flags)
-        ppl_flags += opt.build_perplexity_cache_flags(
-            candidate_cache["cache_k"],
-            candidate_cache["cache_v"],
-            spec_active=False,
-        )
-        print(f"[DEBUG] PPL cache flags: {ppl_flags}")
+        ppl_flags += opt.build_perplexity_cache_flags(ck, cv, spec_active=False)
         trial.set_user_attr("ppl_cache_k", ck)
         trial.set_user_attr("ppl_cache_v", cv)
         trial.set_user_attr("ppl_cache_kd", None)
         trial.set_user_attr("ppl_cache_vd", None)
-        ppl, ppl_code, ppl_stderr = opt.run_perplexity(
-            model_path, perplexity_exe, context_size,
-            flags=ppl_flags, corpus_file=perplexity_file, cancel_flag=cancel_flag, cpu_only=cpu_only
-        )
-        step_name = "DefaultConfig" if trial_role == "default_config" else f"Trial-{trial.number+1}"
-        print(f"[DEBUG] Perplexity parsed for {step_name}: PPL={ppl if ppl is not None else 'unparsed'}, baseline={baseline_ppl:.4f}, threshold={ppl_threshold * 100.0:.1f}%.")
+        try:
+            ppl, _ppl_code, _ppl_stderr = opt.run_perplexity(
+                model_path, perplexity_exe, context_size,
+                flags=ppl_flags, corpus_file=perplexity_file,
+                cancel_flag=cancel_flag, cpu_only=cpu_only,
+            )
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            trial.set_user_attr("ppl_skipped_reason", f"ppl_error: {e}")
+            print(f"[WARN] {step_name} PPL run failed ({e}); previous best retained.")
+            report_progress(score)
+            return score
+        print(f"[DEBUG] Perplexity for {step_name}: PPL={ppl if ppl is not None else 'unparsed'}, "
+              f"baseline={baseline_ppl:.4f}, threshold={ppl_threshold * 100.0:.1f}%.")
         accepted = opt.passes_perplexity_gate(ppl, baseline_ppl, ppl_threshold)
         trial.set_user_attr("perplexity", ppl)
-        trial.set_user_attr("ppl_validated", accepted)
+        trial.set_user_attr("ppl_validated", bool(accepted))
         if not accepted:
-            step_name = "DefaultConfig" if trial_role == "default_config" else f"Trial-{trial.number+1}"
             required = baseline_ppl * (1.0 + ppl_threshold)
-            failure_score = penalized_failure_score(score)
-            print(f"[INFO] Discarded {step_name} by perplexity_gate: ppl {ppl}, baseline {baseline_ppl:.4f}, required <= {required:.4f}.")
+            print(f"[INFO] Discarded {step_name} as incumbent by perplexity_gate: ppl {ppl}, "
+                  f"baseline {baseline_ppl:.4f}, required <= {required:.4f}. Previous best retained.")
             trial.set_user_attr("discarded_by", "perplexity_gate")
-            report_progress(failure_score)
-            return failure_score
-
-        update_best_quality(score)
+            report_progress(score)
+            return score
+        best_speed_score = score
+        best_accepted_trial = trial
+        best_accepted_ppl = ppl
         report_progress(score)
         return score
 
@@ -521,18 +539,68 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         (trial for trial in study.trials if trial.user_attrs.get("trial_role") == "default_config"),
         None,
     )
-    best_trial = best_quality_trial
+
+    # The winner is the per-trial PPL-qualified incumbent: the fastest trial
+    # that passed the quality gate during the search. TPE kept the raw speed
+    # as its objective throughout; only incumbency was gated.
+    best_trial = best_accepted_trial
     if best_trial is None:
-        print("[INFO] No PPL-validated trial completed; returning baseline command as result.")
+        print("[INFO] No trial beat the baseline and passed the PPL quality gate; "
+              "returning baseline command as result.")
         return baseline_result()
 
-    best_score = best_quality_score
+    best_score = best_speed_score
+    best_ppl = best_accepted_ppl
 
     best_params = best_trial.params
     final_cache_k = best_trial.user_attrs.get("cache_k", best_params.get("cache_k", baseline_cache["cache_k"]))
     final_cache_v = best_trial.user_attrs.get("cache_v", best_params.get("cache_v", baseline_cache["cache_v"]))
     final_threads = best_trial.user_attrs.get("threads", best_params.get("threads"))
     final_thread_batch = best_trial.user_attrs.get("thread_batch", best_params.get("thread_batch"))
+    measured_pp = float(best_trial.user_attrs.get("pp", 0.0) or 0.0)
+    measured_tg = float(best_trial.user_attrs.get("tg", 0.0) or 0.0)
+
+    # ---- Verify-picks: re-run the PPL-qualified winner to guard noise ----
+    verified_pp, verified_tg = measured_pp, measured_tg
+    verified_spread_pp = float(best_trial.user_attrs.get("pp_spread", 0.0) or 0.0)
+    verified_spread_tg = float(best_trial.user_attrs.get("tg_spread", 0.0) or 0.0)
+    try:
+        verify_n = max(0, int(verify_picks or 0))
+    except (TypeError, ValueError):
+        verify_n = 0
+    if verify_n > 0 and not (cancel_flag and cancel_flag[0]):
+        if progress_callback:
+            progress_callback(n_trials + 1, n_trials + 1,
+                              "Verifying winner", best_score,
+                              best_speed_score, baseline_score)
+        try:
+            v_stats = {}
+            v_pp, v_tg = opt.run_benchmark(
+                model_path, server_exe, context_size,
+                proc_holder=proc_holder,
+                t=final_threads, tb=final_thread_batch,
+                b=best_params.get("batch"), ub=best_params.get("micro_batch", best_params.get("batch")),
+                fitt=best_params.get("fitt"),
+                cache_k=final_cache_k, cache_v=final_cache_v,
+                cache_kd=best_trial.user_attrs.get("cache_kd", "f16"),
+                cache_vd=best_trial.user_attrs.get("cache_vd", "f16"),
+                mtp=is_speculative, spec_draft_n=best_params.get("spec_draft_n"),
+                avg_runs=verify_n, draft_model_path=draft_model_path,
+                spec_draft_p_min=best_params.get("spec_draft_p_min"),
+                cancel_flag=cancel_flag, cpu_only=cpu_only,
+                stats_out=v_stats,
+            )
+            if v_pp > 0 and v_tg > 0:
+                verified_pp, verified_tg = float(v_pp), float(v_tg)
+                verified_spread_pp = float(v_stats.get("pp_spread", 0.0) or 0.0)
+                verified_spread_tg = float(v_stats.get("tg_spread", 0.0) or 0.0)
+                print(f"[INFO] Winner verification: pp={verified_pp:.2f} "
+                      f"tg={verified_tg:.2f} (measured pp={measured_pp:.2f} tg={measured_tg:.2f}).")
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            print(f"[WARN] Winner verification failed, keeping measured speeds: {e}")
+    verified_score = opt.calculate_score(verified_pp, verified_tg, metric_weight)
 
     final_config = {
         "threads": final_threads,
@@ -559,10 +627,16 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         "baseline_ppl": baseline_ppl,
         "ppl_threshold": ppl_threshold,
         "best_score": f"{best_score:.2f}",
-        "best_quality_score": f"{best_quality_score:.2f}",
-        "best_pp": f"{best_trial.user_attrs.get('pp', 0.0):.2f}",
-        "best_tg": f"{best_trial.user_attrs.get('tg', 0.0):.2f}",
-        "best_ppl": best_quality_trial.user_attrs.get("perplexity") if best_quality_trial is not None else None,
+        "best_quality_score": f"{best_score:.2f}",
+        "best_pp": f"{measured_pp:.2f}",
+        "best_tg": f"{measured_tg:.2f}",
+        "best_ppl": best_ppl,
+        "best_trial_number": best_trial.number,
+        "verified_pp": f"{verified_pp:.2f}",
+        "verified_tg": f"{verified_tg:.2f}",
+        "verified_score": f"{verified_score:.2f}",
+        "best_pp_spread": float(best_trial.user_attrs.get("pp_spread", 0.0) or 0.0),
+        "best_tg_spread": float(best_trial.user_attrs.get("tg_spread", 0.0) or 0.0),
     }
     if is_speculative:
         final_config.update({
@@ -590,6 +664,7 @@ def main():
     parser.add_argument("--mtp", action="store_true", help="Enable multi-token prediction (MTP) optimization; requires MTP-capable model")
     parser.add_argument("--draft", default=None, help="Path to separate draft model GGUF for speculative decoding")
     parser.add_argument("--seed", type=int, default=42, help="Optuna sampler seed")
+    parser.add_argument("--verify-picks", type=int, default=2, help="Extra benchmark runs to verify the winning config (0 disables)")
     parser.add_argument("--time-budget", type=float, default=None, help="Stop after N seconds; current trial may finish first")
     parser.add_argument("--trial-csv", default=None, help="Write completed trial params/results to CSV")
     args = parser.parse_args()
@@ -608,7 +683,8 @@ def main():
         args.model, args.server, context_size=args.context,
         metric_weight=0.5, n_trials=args.trials, avg_runs=args.avg,
         progress_callback=_print_progress, mtp=args.mtp, draft_model_path=args.draft,
-        seed=args.seed, time_budget=args.time_budget, trial_csv_path=args.trial_csv
+        seed=args.seed, time_budget=args.time_budget, trial_csv_path=args.trial_csv,
+        verify_picks=args.verify_picks,
     )
     elapsed = time.time() - start
     if final:

@@ -1899,6 +1899,7 @@ class LlamaServerGUI:
         saved_trials = config_data.get("optimiser_trials", 40)
         saved_avg = config_data.get("optimiser_avg_runs", 1)
         saved_seed = config_data.get("optimiser_seed", 42)
+        saved_verify_picks = config_data.get("optimiser_verify_picks", 2)
         saved_ppl_threshold = config_data.get("optimiser_ppl_threshold_percent", self.config.ppl_threshold_percent)
         saved_perplexity_file = (
             config_data.get("perplexity_file")
@@ -2006,6 +2007,9 @@ class LlamaServerGUI:
         seed_var = tk.IntVar(value=saved_seed)
         _spin_row("Seed (keep the same between optimisation runs for reproducibility):", seed_var, 0, 2147483647, 1, width=10)
 
+        verify_var = tk.IntVar(value=saved_verify_picks)
+        _spin_row("Verify winner (extra benchmark runs, 0 disables):", verify_var, 0, 10, 1, width=8)
+
         ppl_var = tk.DoubleVar(value=saved_ppl_threshold)
         _spin_row("PPL Threshold (% degradation allowed):", ppl_var, 1.0, 10.0, 0.5, width=8, fmt="%.1f")
 
@@ -2048,6 +2052,7 @@ class LlamaServerGUI:
                 "trials": trials_var.get(),
                 "avg_runs": avg_var.get(),
                 "seed": seed_var.get(),
+                "verify_picks": verify_var.get(),
                 "ppl_threshold_percent": ppl_var.get(),
                 "perplexity_file": perplexity_file_var.get(),
                 "cpu_only": cpu_only_var.get(),
@@ -2067,6 +2072,7 @@ class LlamaServerGUI:
                     "optimiser_trials": payload["trials"],
                     "optimiser_avg_runs": payload["avg_runs"],
                     "optimiser_seed": payload["seed"],
+                    "optimiser_verify_picks": payload["verify_picks"],
                     "optimiser_ppl_threshold_percent": payload["ppl_threshold_percent"],
                     "optimiser_cpu_only": payload["cpu_only"],
                     "perplexity_file": payload["perplexity_file"],
@@ -2288,6 +2294,12 @@ class LlamaServerGUI:
         best_pp  = _safe_float(final_config.get("best_pp", 0.0))
         best_tg  = _safe_float(final_config.get("best_tg", 0.0))
         best_ppl = final_config.get("best_ppl")
+        verified_pp = _safe_float(final_config.get("verified_pp", best_pp), best_pp)
+        verified_tg = _safe_float(final_config.get("verified_tg", best_tg), best_tg)
+        verified_score = _safe_float(final_config.get("verified_score", best), best)
+        best_trial_number = final_config.get("best_trial_number")
+        best_pp_spread = _safe_float(final_config.get("best_pp_spread", 0.0))
+        best_tg_spread = _safe_float(final_config.get("best_tg_spread", 0.0))
 
         def _safe_bool(value, default=False):
             if value is None:
@@ -2393,6 +2405,12 @@ class LlamaServerGUI:
             f"Best Score:       {best:.2f}",
             f"Best PP Speed:    {best_pp:.2f} t/s",
             f"Best TG Speed:    {best_tg:.2f} t/s",
+            f"Best Trial:       {'trial-' + str(best_trial_number) if best_trial_number is not None else '--'}",
+            f"PP Spread:        {best_pp_spread:.2f}",
+            f"TG Spread:        {best_tg_spread:.2f}",
+            f"Verified PP:      {verified_pp:.2f} t/s",
+            f"Verified TG:      {verified_tg:.2f} t/s",
+            f"Verified Score:   {verified_score:.2f}",
             f"Improvement:      {pct_gain:.2f}%",
             f"Result:           {'No trial beat baseline; using baseline command.' if use_baseline_command else 'Best PPL-validated trial selected.'}",
             f"",
@@ -2613,6 +2631,7 @@ class LlamaServerGUI:
             trials=cfg["trials"],
             avg_runs=cfg["avg_runs"],
             seed=cfg["seed"],
+            verify_picks=cfg.get("verify_picks", 2),
         )
 
         # Run optimiser

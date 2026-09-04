@@ -2,6 +2,7 @@ import subprocess
 import re
 import os
 import socket
+import statistics
 import time
 import tempfile
 import requests
@@ -84,6 +85,57 @@ def calculate_score(pp, tg, metric_weight=0.5):
     if pp is None or tg is None:
         return -1.0
     return (pp * metric_weight) + (tg * (1.0 - metric_weight))
+
+
+def median_of_valid(samples):
+    """Median over positive samples; zero/invalid reps never destroy a benchmark
+
+    [10, 10, 0] -> 10. Empty / all-invalid -> 0.0
+    """
+    valid = [float(s) for s in (samples or []) if s is not None and float(s) > 0]
+    if not valid:
+        return 0.0
+    return float(statistics.median(valid))
+
+
+def summarise_samples(samples):
+    """Return {median, spread, n_valid, n_total, n_rejected} for rep samples."""
+    total = len(samples or [])
+    valid = [float(s) for s in (samples or []) if s is not None and float(s) > 0]
+    if not valid:
+        return {"median": 0.0, "spread": 0.0, "n_valid": 0,
+                "n_total": total, "n_rejected": total}
+    median = float(statistics.median(valid))
+    spread = float(max(valid) - min(valid)) if len(valid) > 1 else 0.0
+    return {"median": median, "spread": spread, "n_valid": len(valid),
+            "n_total": total, "n_rejected": total - len(valid)}
+
+
+def needs_quality_check(trial_score, best_score):
+    """True only when the trial is strictly faster than the accepted best.
+
+    Slower or equal-speed trials never spend a PPL run: they cannot become
+    the incumbent regardless of quality.
+    """
+    try:
+        return float(trial_score) > float(best_score)
+    except (TypeError, ValueError):
+        return False
+
+
+def accept_as_best(trial_score, best_score, needs_ppl, ppl_passes):
+    """True when a trial is allowed to become the incumbent
+
+    A trial becomes best only if it is BOTH faster than the current best AND
+    quality-qualified (PPL passes, or no PPL needed because its cache matches
+    the baseline). PPL failure never changes the trial's speed objective, it
+    only blocks incumbency
+    """
+    if not needs_quality_check(trial_score, best_score):
+        return False
+    if not needs_ppl:
+        return True
+    return bool(ppl_passes)
 
 
 def _project_file(path):
@@ -494,9 +546,15 @@ def run_benchmark(model_path, server_exe, context_size, proc_holder=None,
                   t=None, tb=None, b=None, ub=None, fitt=None, cache_k="f16", cache_v="f16",
                   cache_kd="f16", cache_vd="f16",
                   no_mmap=False, is_base=False, avg_runs=1, mtp=False, spec_draft_n=None,
-                  draft_model_path=None, spec_draft_p_min=None, cancel_flag=None, cpu_only=False):
-    """Start llama-server, run benchmark, stop server. Returns (pp_tps, tg_tps)."""
-    pp_total, tg_total, valid = 0.0, 0.0, 0
+                  draft_model_path=None, spec_draft_p_min=None, cancel_flag=None, cpu_only=False,
+                  stats_out=None):
+    """Start llama-server, run benchmark, stop server. Returns (pp_tps, tg_tps)
+
+    Aggregation is median over valid reps (a zero-speed rep never destroys an
+    otherwise valid benchmark). If stats_out (dict) is supplied it is populated
+    with pp/tg median, spread, reps_valid/total/rejected
+    """
+    pp_samples, tg_samples = [], []
 
     for run_i in range(avg_runs):
         if cancel_flag and cancel_flag[0]:
@@ -568,9 +626,8 @@ def run_benchmark(model_path, server_exe, context_size, proc_holder=None,
                         print("[SERVER STDERR AFTER TERMINATION]\n" + err)
                 continue
             if pp > 0 and tg > 0:
-                pp_total += pp
-                tg_total += tg
-                valid += 1
+                pp_samples.append(float(pp))
+                tg_samples.append(float(tg))
         finally:
             if cancel_flag and cancel_flag[0]:
                 kill_port(BENCH_PORT, proc_holder)
@@ -581,6 +638,19 @@ def run_benchmark(model_path, server_exe, context_size, proc_holder=None,
             # Give OS time to fully release the port
             time.sleep(2)
 
-    if valid == 0:
+    pp_summary = summarise_samples(pp_samples)
+    tg_summary = summarise_samples(tg_samples)
+    n_valid = min(pp_summary["n_valid"], tg_summary["n_valid"])
+    if stats_out is not None and isinstance(stats_out, dict):
+        stats_out.update({
+            "pp_median": pp_summary["median"],
+            "tg_median": tg_summary["median"],
+            "pp_spread": pp_summary["spread"],
+            "tg_spread": tg_summary["spread"],
+            "reps_valid": n_valid,
+            "reps_total": int(avg_runs),
+            "reps_rejected": max(0, int(avg_runs) - n_valid),
+        })
+    if pp_summary["n_valid"] == 0 or tg_summary["n_valid"] == 0:
         return 0.0, 0.0
-    return pp_total / valid, tg_total / valid
+    return pp_summary["median"], tg_summary["median"]
