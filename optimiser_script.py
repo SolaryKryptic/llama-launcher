@@ -81,6 +81,54 @@ def build_thread_list():
     }
 
 
+# Search presets: trial budget + search-space breadth for Optuna TPE.
+# (Not DOE levels: each preset only changes how many trials run and how wide
+# the batch space is. Thread/cache/speculative spaces are always full.)
+SEARCH_PRESETS = {
+    "quick": {
+        "trials": 27,
+        "batch_sizes": [256, 1024, 2048],
+        "micro_batch_sizes": [256, 1024, 2048],
+        "label": "Quick",
+        "blurb": "narrowed batch space",
+    },
+    "standard": {
+        "trials": 50,
+        "batch_sizes": [128, 256, 512, 1024, 2048],
+        "micro_batch_sizes": [128, 256, 512, 1024, 2048],
+        "label": "Standard",
+        "blurb": "full batch space",
+    },
+    "thorough": {
+        "trials": 100,
+        "batch_sizes": [128, 256, 512, 1024, 2048],
+        "micro_batch_sizes": [128, 256, 512, 1024, 2048],
+        "label": "Thorough",
+        "blurb": "full batch space + time budget",
+    },
+}
+
+
+def resolve_preset(name):
+    """Return the preset dict for name, falling back to standard."""
+    try:
+        key = str(name or "standard").strip().lower()
+    except Exception:
+        key = "standard"
+    return SEARCH_PRESETS.get(key, SEARCH_PRESETS["standard"])
+
+
+def describe_preset_plan(name):
+    """One-line plan summary, e.g. 'Quick: ~27 trials, ...' for the GUI."""
+    preset = resolve_preset(name)
+    pairs = build_batch_pairs(preset["batch_sizes"], preset["micro_batch_sizes"])
+    return (
+        f"{preset['label']}: ~{preset['trials']} trials, "
+        f"{preset['blurb']} ({len(pairs)} b/ub pairs), "
+        f"full thread/cache space"
+    )
+
+
 def calculate_score(pp, tg, metric_weight=0.5):
     if pp is None or tg is None:
         return -1.0
@@ -109,6 +157,63 @@ def summarise_samples(samples):
     spread = float(max(valid) - min(valid)) if len(valid) > 1 else 0.0
     return {"median": median, "spread": spread, "n_valid": len(valid),
             "n_total": total, "n_rejected": total - len(valid)}
+
+
+def valid_batch_choices(batch_choices, ub):
+    """Batch values valid alongside a sampled micro-batch (b >= ub).
+
+    Returns the subset of batch_choices that are >= ub so TPE only ever
+    samples (and benchmarks) valid combinations. Falls back to [ub] if the
+    subset would be empty.
+    """
+    try:
+        ub_int = int(ub)
+    except (TypeError, ValueError):
+        return list(batch_choices)
+    valid = [int(v) for v in (batch_choices or []) if int(v) >= ub_int]
+    if not valid:
+        return [ub_int]
+    return valid
+
+
+def build_batch_pairs(batch_choices, micro_batch_choices):
+    """All valid (batch, micro_batch) pairs with b >= ub, as label strings.
+
+    Optuna categoricals cannot change their choice list between trials, so the
+    b >= ub constraint is expressed as one static joint category
+    ("{b}/{ub}"), mirroring the existing thread_pair pattern. Every sampled
+    pair is valid by construction: nothing is clamped after benchmarking.
+    """
+    pairs = []
+    for b in (batch_choices or []):
+        for ub in (micro_batch_choices or []):
+            try:
+                if int(b) >= int(ub):
+                    pairs.append(f"{int(b)}/{int(ub)}")
+            except (TypeError, ValueError):
+                continue
+    if not pairs:
+        pairs = ["512/512"]
+    return pairs
+
+
+def parse_batch_pair(pair_label):
+    b_str, ub_str = str(pair_label).split("/")
+    return int(b_str), int(ub_str)
+
+
+def is_slow(score, min_score):
+    """True when a score floor is configured and the trial falls below it.
+
+    SLOW trials keep their raw speed as the TPE objective but are excluded
+    from incumbency (like a PPL failure). None/0 floor disables the check.
+    """
+    try:
+        if min_score is None or float(min_score) <= 0:
+            return False
+        return float(score) < float(min_score)
+    except (TypeError, ValueError):
+        return False
 
 
 def needs_quality_check(trial_score, best_score):
@@ -302,6 +407,45 @@ def get_neighbors(current, sweep_list):
     if idx < len(sweep_list) - 1:
         neighbors.append(sweep_list[idx + 1])
     return list(set(neighbors))
+
+
+def get_gpu_temp_c():
+    """Best-effort GPU temperature in Celsius, or None when unavailable.
+
+    Never raises and never blocks optimisation: a missing driver, missing
+    binary, or unparsable output simply yields None.
+    """
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=temperature.gpu",
+             "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            creationflags=_NO_WINDOW,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return None
+        for line in (result.stdout or "").splitlines():
+            line = line.strip()
+            if line.lstrip("-").isdigit():
+                return float(line)
+        return None
+    except Exception:
+        return None
+
+
+def cooldown_pause(seconds, cancel_flag=None, step=0.5):
+    """Sleep in small increments so cancellation takes effect promptly."""
+    try:
+        remaining = max(0.0, float(seconds or 0.0))
+    except (TypeError, ValueError):
+        return
+    while remaining > 0:
+        if cancel_flag and cancel_flag[0]:
+            return
+        time.sleep(min(step, remaining))
+        remaining -= step
 
 
 def port_is_free(port):
@@ -547,14 +691,15 @@ def run_benchmark(model_path, server_exe, context_size, proc_holder=None,
                   cache_kd="f16", cache_vd="f16",
                   no_mmap=False, is_base=False, avg_runs=1, mtp=False, spec_draft_n=None,
                   draft_model_path=None, spec_draft_p_min=None, cancel_flag=None, cpu_only=False,
-                  stats_out=None):
+                  stats_out=None, cooldown_secs=0.0):
     """Start llama-server, run benchmark, stop server. Returns (pp_tps, tg_tps)
 
     Aggregation is median over valid reps (a zero-speed rep never destroys an
     otherwise valid benchmark). If stats_out (dict) is supplied it is populated
-    with pp/tg median, spread, reps_valid/total/rejected
+    with pp/tg median, spread, reps_valid/total/rejected, temp_before/after/c
     """
     pp_samples, tg_samples = [], []
+    temp_before = get_gpu_temp_c()
 
     for run_i in range(avg_runs):
         if cancel_flag and cancel_flag[0]:
@@ -635,9 +780,16 @@ def run_benchmark(model_path, server_exe, context_size, proc_holder=None,
                 stop_server(proc)
             if proc_holder is not None:
                 proc_holder[0] = None
-            # Give OS time to fully release the port
-            time.sleep(2)
+            # Thermal settle + port release: the fixed cooldown subsumes the
+            # old 2s sleep. Cancel-aware so aborts stay responsive.
+            try:
+                settle = max(2.0, float(cooldown_secs or 0.0))
+            except (TypeError, ValueError):
+                settle = 2.0
+            cooldown_pause(settle, cancel_flag)
 
+    temp_after = get_gpu_temp_c()
+    temp_c = temp_after if temp_after is not None else temp_before
     pp_summary = summarise_samples(pp_samples)
     tg_summary = summarise_samples(tg_samples)
     n_valid = min(pp_summary["n_valid"], tg_summary["n_valid"])
@@ -650,6 +802,9 @@ def run_benchmark(model_path, server_exe, context_size, proc_holder=None,
             "reps_valid": n_valid,
             "reps_total": int(avg_runs),
             "reps_rejected": max(0, int(avg_runs) - n_valid),
+            "temp_before": temp_before,
+            "temp_after": temp_after,
+            "temp_c": temp_c,
         })
     if pp_summary["n_valid"] == 0 or tg_summary["n_valid"] == 0:
         return 0.0, 0.0

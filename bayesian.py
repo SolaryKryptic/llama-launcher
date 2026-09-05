@@ -12,6 +12,7 @@ If `optuna` is not installed, the script prints instructions to install it
 
 import argparse
 import csv
+import json
 import os
 import time
 
@@ -23,6 +24,183 @@ except Exception:
 import optimiser_script as opt
 
 
+DEFAULT_JOURNAL_NAME = "optuna_journal.log"
+
+
+def default_journal_path():
+    """Portable default journal path next to the exe/config."""
+    try:
+        from optimisation_service import get_exe_dir
+        base = get_exe_dir()
+    except Exception:
+        base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, DEFAULT_JOURNAL_NAME)
+
+
+def _journal_backend(journal_path):
+    """JournalStorage over a file backend with a Windows-safe lock."""
+    try:
+        from optuna.storages import JournalStorage
+        try:
+            from optuna.storages.journal import (
+                JournalFileBackend, JournalFileOpenLock)
+        except ImportError:  # Optuna < 4.0 import paths.
+            from optuna.storages import (
+                JournalFileOpenLock, JournalFileStorage as JournalFileBackend)
+    except ImportError as e:
+        raise RuntimeError(f"journal storage unavailable: {e}")
+    # OpenLock: single-process use, safe on Windows (the default symlink
+    # lock needs elevated privileges there).
+    return JournalStorage(JournalFileBackend(
+        str(journal_path), JournalFileOpenLock(str(journal_path))))
+
+
+def requeue_crashed_trial(study, stale_trial):
+    """Re-run an interrupted trial's config as a brand-new trial.
+
+    enqueue_trial with distributions hits an Optuna journal-backend
+    limitation (raw json.dumps of distributions), so fixed params are
+    enqueued bare and their distributions attached via set_trial_param,
+    which serializes correctly. Returns the new trial number or None.
+    """
+    params = dict(getattr(stale_trial, "params", {}) or {})
+    distributions = dict(getattr(stale_trial, "distributions", {}) or {})
+    if not params:
+        return None
+    study.enqueue_trial(params)
+    waiting = [t for t in study.trials
+               if str(getattr(t, "state", "")) == "TrialState.WAITING"
+               or getattr(getattr(t, "state", ""), "name", "") == "WAITING"]
+    if not waiting:
+        return None
+    new_trial = max(waiting, key=lambda t: t.number)
+    for name, dist in distributions.items():
+        if name not in params:
+            continue
+        try:
+            study._storage.set_trial_param(
+                new_trial._trial_id, name,
+                dist.to_internal_repr(params[name]), dist)
+        except Exception as e:
+            print(f"[WARN] Could not attach distribution for {name}: {e}")
+            return None
+    return new_trial.number
+
+
+def model_slug(model_path):
+    base = os.path.basename(str(model_path or "model"))
+    slug = "".join(c if (c.isalnum() or c in ("-", "_", ".")) else "_" for c in base)
+    return (slug[:60] or "model").lower()
+
+
+def _journal_index_path(journal_path):
+    return str(journal_path) + ".index.json"
+
+
+def _load_journal_index(journal_path):
+    try:
+        with open(_journal_index_path(journal_path), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict) and isinstance(data.get("studies"), list):
+            return data
+    except Exception:
+        pass
+    return {"studies": []}
+
+
+def _save_journal_index(journal_path, data):
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(str(journal_path))), exist_ok=True)
+        tmp = _journal_index_path(journal_path) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, _journal_index_path(journal_path))
+    except Exception as e:
+        print(f"[WARN] Could not save journal index: {e}")
+
+
+def register_study(journal_path, study_name, model_path):
+    """Record a study in the sidecar index so the GUI can list/resume it."""
+    data = _load_journal_index(journal_path)
+    studies = [s for s in data.get("studies", [])
+               if s.get("name") != study_name]
+    studies.append({
+        "name": study_name,
+        "model": model_slug(model_path),
+        "model_path_basename": os.path.basename(str(model_path or "")),
+        "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+    })
+    data["studies"] = studies[-50:]
+    _save_journal_index(journal_path, data)
+
+
+def list_studies_for_model(journal_path, model_path):
+    """Study names for this model, newest first. Empty list when none."""
+    slug = model_slug(model_path)
+    data = _load_journal_index(journal_path)
+    names = [s.get("name") for s in data.get("studies", [])
+             if s.get("model") == slug and s.get("name")]
+    names.reverse()
+    return names
+
+
+def rebuild_incumbent(trials, baseline_score):
+    """Recover (best_score, best_trial, best_ppl) from stored trial history.
+
+    The winner under the acceptance rule is simply the fastest trial with
+    ppl_validated=True, so no separate journal is needed for incumbency.
+    Returns (baseline_score, None, None) when nothing qualifies.
+    """
+    best_score = baseline_score
+    best_trial = None
+    best_ppl = None
+    try:
+        ordered = sorted(
+            (t for t in trials
+             if getattr(t, "value", None) is not None
+             and float(t.value) > float(best_score)
+             and (t.user_attrs or {}).get("ppl_validated")),
+            key=lambda t: float(t.value),
+        )
+    except (TypeError, ValueError, AttributeError):
+        return baseline_score, None, None
+    if ordered:
+        best_trial = ordered[-1]
+        best_score = float(best_trial.value)
+        best_ppl = (best_trial.user_attrs or {}).get("perplexity")
+    return best_score, best_trial, best_ppl
+
+
+def fail_stale_running_trials(study):
+    """Mark interrupted RUNNING trials FAIL so they are never auto-retried.
+
+    Returns the list of failed FrozenTrials (params available for explicit
+    retry-crashed via fresh trials).
+    """
+    if optuna is None:
+        return []
+    try:
+        from optuna.trial import TrialState
+    except Exception:
+        return []
+    failed = []
+    try:
+        running = [t for t in study.trials if t.state == TrialState.RUNNING]
+    except Exception:
+        return []
+    for trial in running:
+        try:
+            study._storage.set_trial_state_values(trial._trial_id, TrialState.FAIL)
+            failed.append(trial)
+            print(f"[INFO] Marked stale RUNNING trial-{trial.number} as FAIL "
+                  f"(interrupted run; use retry-crashed to re-run explicitly).")
+        except Exception as e:
+            print(f"[WARN] Could not mark trial-{trial.number} FAIL: {e}")
+    return failed
+
+
 def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
                               metric_weight=0.1, n_trials=40, avg_runs=1,
                               progress_callback=None, cancel_flag=None, proc_holder=None,
@@ -31,7 +209,9 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
                               perplexity_exe=None, perplexity_file=opt.PERPLEXITY_FILE,
                               ppl_threshold=opt.PPL_THRESHOLD,
                               lock_cache_quant=False, cache_k_locked=None, cache_v_locked=None,
-                              verify_picks=2):
+                              verify_picks=2, min_score=None, cooldown_secs=5.0,
+                              search_preset="standard", journal_path=None,
+                              resume_study=None, retry_crashed=False):
     """Run an Optuna (TPE) search over the same parameter families used by
     `optimiser_script.run_benchmark`. Returns a final_config dict
     matching the existing optimiser's returned structure, or None on failure.
@@ -56,7 +236,8 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
     base_pp, base_tg = opt.run_benchmark(
         model_path, server_exe, context_size,
         proc_holder=proc_holder, is_base=True, avg_runs=avg_runs,
-        draft_model_path=draft_model_path, mtp=is_speculative, cancel_flag=cancel_flag, cpu_only=cpu_only
+        draft_model_path=draft_model_path, mtp=is_speculative, cancel_flag=cancel_flag, cpu_only=cpu_only,
+        cooldown_secs=cooldown_secs,
     )
     baseline_score = opt.calculate_score(base_pp, base_tg, metric_weight)
     if baseline_score <= 0:
@@ -81,8 +262,8 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
     cap_limit = params.get("cap_limit", 1) or max(1, threads_choices[-1] if threads_choices else 0)
     threads_choices = [t for t in threads_choices if 1 <= t <= cap_limit]
 
-    batch_choices = params.get("batch_sizes", [128, 256, 512, 1024, 2048])
-    micro_batch_choices = params.get("micro_batch_sizes", [128, 256, 512, 1024, 2048])
+    batch_choices = list(opt.resolve_preset(search_preset)["batch_sizes"])
+    micro_batch_choices = list(opt.resolve_preset(search_preset)["micro_batch_sizes"])
     fitt_choices = params.get("fitt_targets", [50])
     cache_k_choices = params.get("cache_k_types", ["f16", "q8_0", "q5_0", "q4_0"])
     cache_v_choices = params.get("cache_v_types", ["f16", "q8_0", "q5_0", "q4_0"])
@@ -168,6 +349,8 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         t_str, tb_str = pair_label.split("/")
         return int(t_str), int(tb_str)
 
+    batch_pair_labels = opt.build_batch_pairs(batch_choices, micro_batch_choices)
+
     baseline_trial = {
         "threads": default_threads,
         "thread_batch": default_tb,
@@ -232,18 +415,74 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
     if default_threads == -1 or default_tb == -1:
         return baseline_result()
 
+    storage = None
+    if journal_path:
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(str(journal_path))), exist_ok=True)
+            storage = _journal_backend(journal_path)
+        except Exception as e:
+            print(f"[WARN] Journal storage unavailable ({e}); using in-memory study.")
+
+    resuming = bool(resume_study and storage is not None)
+    if journal_path and not resuming:
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        study_name = f"llama-{model_slug(model_path)}-{stamp}"
+    elif resuming:
+        study_name = str(resume_study)
+    else:
+        study_name = None
+
     study = optuna.create_study(
+        study_name=study_name,
+        storage=storage,
+        load_if_exists=resuming,
         direction="maximize",
         sampler=optuna.samplers.TPESampler(
             seed=seed,
             n_startup_trials=min(25, max(15, n_trials // 4)),
         ),
     )
-    
+    completed_before = 0
+    if resuming:
+        try:
+            register_study(journal_path, study_name, model_path)
+        except Exception:
+            pass
+        # Never auto-retry interrupted trials; explicit retry below only.
+        stale = fail_stale_running_trials(study)
+        if retry_crashed:
+            for trial in stale:
+                new_number = requeue_crashed_trial(study, trial)
+                if new_number is not None:
+                    print(f"[INFO] Re-queued crashed trial-{trial.number} params "
+                          f"as new trial-{new_number}.")
+                else:
+                    print(f"[WARN] Could not re-queue trial-{trial.number}.")
+        completed_before = len(study.trials)
+        # Recover incumbency from stored attrs: fastest ppl_validated trial.
+        best_speed_score, _recovered, _recovered_ppl = rebuild_incumbent(
+            study.trials, baseline_score)
+        if _recovered is not None:
+            best_accepted_trial = _recovered
+            best_accepted_ppl = _recovered_ppl
+            print(f"[INFO] Resumed study '{study_name}': {completed_before} stored trials, "
+                  f"recovered best trial-{_recovered.number} score {best_speed_score:.2f}.")
+        else:
+            print(f"[INFO] Resumed study '{study_name}': {completed_before} stored trials, "
+                  f"no qualified incumbent yet.")
+    elif journal_path and storage is not None:
+        try:
+            register_study(journal_path, study_name, model_path)
+        except Exception:
+            pass
+
     trial_log = None
     if trial_csv_path:
         os.makedirs(os.path.dirname(os.path.abspath(trial_csv_path)), exist_ok=True)
-        trial_log = open(trial_csv_path, "w", newline="", encoding="utf-8")
+        # On resume, append new rows; the callback writes the header only
+        # when the file is empty.
+        mode = "a" if (resuming and os.path.isfile(trial_csv_path)) else "w"
+        trial_log = open(trial_csv_path, mode, newline="", encoding="utf-8")
 
     csv_fieldnames = [
         "number", "state", "value", "pp", "tg", "pp_spread", "tg_spread",
@@ -304,6 +543,8 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
                 row["param_cache_vd"] = trial.user_attrs.get("cache_vd", row.get("param_cache_vd"))
                 row["param_threads"] = trial.user_attrs.get("threads", row.get("param_threads"))
                 row["param_thread_batch"] = trial.user_attrs.get("thread_batch", row.get("param_thread_batch"))
+                row["param_batch"] = trial.user_attrs.get("batch", row.get("param_batch"))
+                row["param_micro_batch"] = trial.user_attrs.get("micro_batch", row.get("param_micro_batch"))
                 writer = csv.DictWriter(trial_log, fieldnames=csv_fieldnames, extrasaction="ignore")
                 if trial_log.tell() == 0:
                     writer.writeheader()
@@ -328,9 +569,14 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         trial.set_user_attr("threads", t)
         trial.set_user_attr("thread_batch", tb)
         trial.set_user_attr("thread_batch_valid", True)
-        b = trial.suggest_categorical("batch", batch_choices)
-        ub_candidate = trial.suggest_categorical("micro_batch", micro_batch_choices)
-        ub = min(ub_candidate, b)
+        # Joint pair category (static choice list: Optuna categoricals cannot
+        # change options between trials). Every "b/ub" pair satisfies b >= ub
+        # by construction, so what TPE samples is exactly what benchmarks run.
+        batch_pair_label = trial.suggest_categorical("batch_pair", batch_pair_labels)
+        b, ub = opt.parse_batch_pair(batch_pair_label)
+        trial.set_user_attr("batch_pair", batch_pair_label)
+        trial.set_user_attr("batch", b)
+        trial.set_user_attr("micro_batch", ub)
         fitt = trial.suggest_categorical("fitt", fitt_choices)
         ck = cache_k_locked if lock_cache_quant else trial.suggest_categorical("cache_k", cache_k_choices)
         cv = cache_v_locked if lock_cache_quant else trial.suggest_categorical("cache_v", cache_v_choices)
@@ -364,7 +610,10 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         def report_progress(last_score):
             if progress_callback:
                 step_name = "DefaultConfig" if trial_role == "default_config" else f"Trial-{trial.number+1}"
-                progress_callback(trial.number + 1, n_trials, step_name, last_score, best_speed_score, baseline_score)
+                # On resume, trial numbers continue past earlier runs; display
+                # progress for this run only.
+                run_idx = max(1, trial.number + 1 - completed_before)
+                progress_callback(run_idx, n_trials, step_name, last_score, best_speed_score, baseline_score)
 
         def benchmark_with_retry():
             last_error = None
@@ -384,7 +633,7 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
                         mtp=is_speculative, spec_draft_n=sdn,
                         avg_runs=avg_runs, draft_model_path=draft_model_path,
                         spec_draft_p_min=sdp, cancel_flag=cancel_flag, cpu_only=cpu_only,
-                        stats_out=stats,
+                        stats_out=stats, cooldown_secs=cooldown_secs,
                     )
                     last_stats = stats
                 except KeyboardInterrupt:
@@ -432,7 +681,17 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         trial.set_user_attr("pp_spread", rep_stats.get("pp_spread", 0.0))
         trial.set_user_attr("tg_spread", rep_stats.get("tg_spread", 0.0))
         trial.set_user_attr("reps_valid", rep_stats.get("reps_valid", avg_runs))
+        trial.set_user_attr("temp_c", rep_stats.get("temp_c"))
         trial.set_user_attr("ppl_validated", False)
+
+        # SLOW floor (when configured): below-floor trials keep their raw
+        # speed as the TPE objective but are excluded from incumbency, so no
+        # PPL run is spent on a configuration that could never be picked.
+        if opt.is_slow(score, min_score):
+            trial.set_user_attr("discarded_by", "SLOW")
+            trial.set_user_attr("ppl_skipped_reason", "below_score_floor")
+            report_progress(score)
+            return score
 
         # Per-trial incumbency gate: only a strictly faster trial can replace
         # the accepted best, and only if it passes the PPL quality gate (or its
@@ -502,18 +761,28 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         report_progress(score)
         return score
 
-    try:
-        baseline_optuna_trial = dict(baseline_trial)
-        baseline_optuna_trial["thread_pair"] = f"{default_threads}/{default_tb}"
-        baseline_optuna_trial.pop("threads", None)
-        baseline_optuna_trial.pop("thread_batch", None)
-        study.enqueue_trial(baseline_optuna_trial)
-        print(
-            "[INFO] Enqueued default config trial, separate from base baseline: "
-            f"-t {default_threads} -tb {default_tb} -b {default_b} -ub {default_ub}"
-        )
-    except Exception as e:
-        print(f"[DEBUG] Could not enqueue baseline trial: {e}")
+    has_default_config = any(
+        getattr(t, "user_attrs", {}).get("trial_role") == "default_config"
+        for t in study.trials
+    )
+    if has_default_config:
+        print("[INFO] Default config trial already recorded; skipping re-enqueue.")
+    else:
+        try:
+            baseline_optuna_trial = dict(baseline_trial)
+            baseline_optuna_trial["thread_pair"] = f"{default_threads}/{default_tb}"
+            baseline_optuna_trial.pop("threads", None)
+            baseline_optuna_trial.pop("thread_batch", None)
+            baseline_optuna_trial["batch_pair"] = f"{default_b}/{default_ub}"
+            baseline_optuna_trial.pop("batch", None)
+            baseline_optuna_trial.pop("micro_batch", None)
+            study.enqueue_trial(baseline_optuna_trial)
+            print(
+                "[INFO] Enqueued default config trial, separate from base baseline: "
+                f"-t {default_threads} -tb {default_tb} -b {default_b} -ub {default_ub}"
+            )
+        except Exception as e:
+            print(f"[DEBUG] Could not enqueue baseline trial: {e}")
 
     try:
         study.optimize(objective, n_trials=n_trials, callbacks=[callback])
@@ -553,6 +822,13 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
     best_ppl = best_accepted_ppl
 
     best_params = best_trial.params
+    _b_attr = best_trial.user_attrs.get("batch")
+    _ub_attr = best_trial.user_attrs.get("micro_batch")
+    if _b_attr is None or _ub_attr is None:
+        # Fallback for studies recorded before b/ub user attrs existed.
+        _b_attr, _ub_attr = opt.parse_batch_pair(
+            best_params.get("batch_pair", f"{default_b}/{default_ub}"))
+    final_b, final_ub = int(_b_attr), int(_ub_attr)
     final_cache_k = best_trial.user_attrs.get("cache_k", best_params.get("cache_k", baseline_cache["cache_k"]))
     final_cache_v = best_trial.user_attrs.get("cache_v", best_params.get("cache_v", baseline_cache["cache_v"]))
     final_threads = best_trial.user_attrs.get("threads", best_params.get("threads"))
@@ -579,7 +855,7 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
                 model_path, server_exe, context_size,
                 proc_holder=proc_holder,
                 t=final_threads, tb=final_thread_batch,
-                b=best_params.get("batch"), ub=best_params.get("micro_batch", best_params.get("batch")),
+                b=final_b, ub=final_ub,
                 fitt=best_params.get("fitt"),
                 cache_k=final_cache_k, cache_v=final_cache_v,
                 cache_kd=best_trial.user_attrs.get("cache_kd", "f16"),
@@ -588,7 +864,7 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
                 avg_runs=verify_n, draft_model_path=draft_model_path,
                 spec_draft_p_min=best_params.get("spec_draft_p_min"),
                 cancel_flag=cancel_flag, cpu_only=cpu_only,
-                stats_out=v_stats,
+                stats_out=v_stats, cooldown_secs=cooldown_secs,
             )
             if v_pp > 0 and v_tg > 0:
                 verified_pp, verified_tg = float(v_pp), float(v_tg)
@@ -605,8 +881,8 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
     final_config = {
         "threads": final_threads,
         "thread_batch": final_thread_batch,
-        "batch": best_params["batch"],
-        "micro_batch": best_params.get("micro_batch", best_params["batch"]),
+        "batch": final_b,
+        "micro_batch": final_ub,
         "fitt": best_params["fitt"],
         "cache_k": final_cache_k,
         "cache_v": final_cache_v,
@@ -665,6 +941,12 @@ def main():
     parser.add_argument("--draft", default=None, help="Path to separate draft model GGUF for speculative decoding")
     parser.add_argument("--seed", type=int, default=42, help="Optuna sampler seed")
     parser.add_argument("--verify-picks", type=int, default=2, help="Extra benchmark runs to verify the winning config (0 disables)")
+    parser.add_argument("--min-score", type=float, default=None, help="Score floor: trials below are kept but never picked (default: disabled)")
+    parser.add_argument("--cooldown-secs", type=float, default=5.0, help="Settle delay between benchmark runs in seconds (default: 5)")
+    parser.add_argument("--preset", default="standard", help="Search preset: quick (~27 trials, narrowed space), standard (~50), thorough (~100)")
+    parser.add_argument("--journal", default=None, help="Optuna journal file for crash-safe resume (default: none, in-memory only)")
+    parser.add_argument("--resume", default=None, help="Resume a prior study by name (requires --journal)")
+    parser.add_argument("--retry-crashed", action="store_true", help="Re-run interrupted trials as new trials on resume")
     parser.add_argument("--time-budget", type=float, default=None, help="Stop after N seconds; current trial may finish first")
     parser.add_argument("--trial-csv", default=None, help="Write completed trial params/results to CSV")
     args = parser.parse_args()
@@ -684,7 +966,10 @@ def main():
         metric_weight=0.5, n_trials=args.trials, avg_runs=args.avg,
         progress_callback=_print_progress, mtp=args.mtp, draft_model_path=args.draft,
         seed=args.seed, time_budget=args.time_budget, trial_csv_path=args.trial_csv,
-        verify_picks=args.verify_picks,
+        verify_picks=args.verify_picks, min_score=args.min_score,
+        cooldown_secs=args.cooldown_secs, search_preset=args.preset,
+        journal_path=args.journal, resume_study=args.resume,
+        retry_crashed=args.retry_crashed,
     )
     elapsed = time.time() - start
     if final:

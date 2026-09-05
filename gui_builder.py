@@ -9,6 +9,7 @@ from tkinter import ttk
 from hardwarescanner import scan_hardware
 from optimisation_service import AVAILABLE_METHODS, DEFAULT_PERPLEXITY_FILE, OptimisationRequest, OptimisationService, resolve_perplexity_file
 from optimiser_script import BENCH_PORT, kill_port
+from optimiser_script import SEARCH_PRESETS, describe_preset_plan
 import sys as _sys2
 
 import sys
@@ -1897,9 +1898,17 @@ class LlamaServerGUI:
         saved_weight = config_data.get("optimiser_weight", 0.5)
         saved_ctx = config_data.get("optimiser_context_size", 16384)
         saved_trials = config_data.get("optimiser_trials", 40)
+        saved_preset = config_data.get("optimiser_preset", "standard")
+        if saved_preset not in SEARCH_PRESETS:
+            saved_preset = "standard"
         saved_avg = config_data.get("optimiser_avg_runs", 1)
         saved_seed = config_data.get("optimiser_seed", 42)
         saved_verify_picks = config_data.get("optimiser_verify_picks", 2)
+        saved_min_score = config_data.get("optimiser_min_score", 0.0)
+        saved_cooldown = config_data.get("optimiser_cooldown_secs", 5.0)
+        saved_journal = config_data.get("optimiser_journal_path", "")
+        saved_resume = config_data.get("optimiser_resume_study", "")
+        saved_retry_crashed = bool(config_data.get("optimiser_retry_crashed", False))
         saved_ppl_threshold = config_data.get("optimiser_ppl_threshold_percent", self.config.ppl_threshold_percent)
         saved_perplexity_file = (
             config_data.get("perplexity_file")
@@ -1999,7 +2008,55 @@ class LlamaServerGUI:
         _spin_row("Context Size:", ctx_var, 512, 1310720, 512, width=10)
 
         trials_var = tk.IntVar(value=saved_trials)
-        _spin_row("Bayesian Trial Count (recommended 40):", trials_var, 1, 500, 1, width=8)
+        _spin_row("Trial Count (set by preset, editable):", trials_var, 1, 500, 1, width=8)
+
+        preset_var = tk.StringVar(value=saved_preset)
+        row_preset = ttk.Frame(dlg)
+        row_preset.pack(fill="x", padx=20, pady=4)
+        ttk.Label(row_preset, text="Preset:").pack(anchor="w")
+        preset_combo = ttk.Combobox(
+            row_preset, textvariable=preset_var,
+            values=[f"{k} — {v['label']}" for k, v in SEARCH_PRESETS.items()],
+            state="readonly", width=24)
+        preset_combo.pack(anchor="w", pady=2)
+        try:
+            preset_combo.set(f"{saved_preset} — {SEARCH_PRESETS[saved_preset]['label']}")
+        except Exception:
+            pass
+        plan_var = tk.StringVar(value="")
+        ttk.Label(row_preset, textvariable=plan_var, foreground="gray").pack(anchor="w")
+
+        _refreshing_plan = [False]
+
+        def _preset_key():
+            try:
+                key = preset_var.get().split(" — ")[0].strip().lower()
+            except Exception:
+                return "standard"
+            return key if key in SEARCH_PRESETS else "standard"
+
+        def _refresh_plan(*_):
+            if _refreshing_plan[0]:
+                return
+            _refreshing_plan[0] = True
+            try:
+                key = _preset_key()
+                try:
+                    trials_var.set(SEARCH_PRESETS[key]["trials"])
+                except Exception:
+                    pass
+                try:
+                    plan_var.set(describe_preset_plan(key))
+                except Exception:
+                    plan_var.set("")
+            finally:
+                _refreshing_plan[0] = False
+
+        preset_var.trace_add("write", _refresh_plan)
+        _refresh_plan()
+
+        def _get_preset_key():
+            return _preset_key()
 
         avg_var = tk.IntVar(value=saved_avg)
         _spin_row("Runs per Trial (recommended 1):", avg_var, 1, 10, 1, width=8)
@@ -2009,6 +2066,48 @@ class LlamaServerGUI:
 
         verify_var = tk.IntVar(value=saved_verify_picks)
         _spin_row("Verify winner (extra benchmark runs, 0 disables):", verify_var, 0, 10, 1, width=8)
+
+        min_score_var = tk.DoubleVar(value=saved_min_score)
+        _spin_row("Minimum score floor (trials below are kept but never picked, 0 disables):", min_score_var, 0.0, 100000.0, 1.0, fmt="%.1f")
+
+        cooldown_var = tk.DoubleVar(value=saved_cooldown)
+        _spin_row("Cooldown between benchmark runs in seconds (thermal settle):", cooldown_var, 0.0, 120.0, 1.0, fmt="%.1f")
+
+        ttk.Label(dlg, text="Crash-safe resume (Optuna journal)", font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=20, pady=(8, 0))
+        journal_var = tk.StringVar(value=saved_journal)
+        _path_picker_row("Journal File (blank = in-memory, no resume):", journal_var)
+        resume_var = tk.BooleanVar(value=bool(saved_resume))
+        tk.Checkbutton(dlg, text="Resume prior study from journal", variable=resume_var).pack(anchor="w", padx=20)
+        study_var = tk.StringVar(value=saved_resume)
+        row_study = ttk.Frame(dlg)
+        row_study.pack(fill="x", padx=20, pady=3)
+        ttk.Label(row_study, text="Study:").pack(side="left")
+        study_combo = ttk.Combobox(row_study, textvariable=study_var, width=40, state="readonly")
+        study_combo.pack(side="left", fill="x", expand=True, padx=(8, 0))
+        retry_var = tk.BooleanVar(value=saved_retry_crashed)
+        tk.Checkbutton(dlg, text="Retry crashed (interrupted) trials as new trials", variable=retry_var).pack(anchor="w", padx=20)
+
+        def _refresh_studies(*_):
+            names = []
+            jp = journal_var.get().strip()
+            if jp:
+                try:
+                    from bayesian import list_studies_for_model
+                    if not os.path.isabs(jp):
+                        from optimisation_service import get_exe_dir
+                        jp = os.path.join(get_exe_dir(), jp)
+                    names = list_studies_for_model(jp, self.config.model_path)
+                except Exception:
+                    names = []
+            try:
+                study_combo.config(values=names)
+                if study_var.get() not in names:
+                    study_var.set(names[0] if names else "")
+            except Exception:
+                pass
+
+        journal_var.trace_add("write", _refresh_studies)
+        _refresh_studies()
 
         ppl_var = tk.DoubleVar(value=saved_ppl_threshold)
         _spin_row("PPL Threshold (% degradation allowed):", ppl_var, 1.0, 10.0, 0.5, width=8, fmt="%.1f")
@@ -2050,9 +2149,18 @@ class LlamaServerGUI:
                 "metric_weight": weight_var.get(),
                 "context_size": ctx_var.get(),
                 "trials": trials_var.get(),
+                "preset": _get_preset_key(),
                 "avg_runs": avg_var.get(),
                 "seed": seed_var.get(),
                 "verify_picks": verify_var.get(),
+                "min_score": (None if float(min_score_var.get()) <= 0
+                              else float(min_score_var.get())),
+                "cooldown_secs": float(cooldown_var.get()),
+                "journal_path": journal_var.get().strip(),
+                "resume_study": (study_var.get().strip()
+                                 if resume_var.get() and study_var.get().strip()
+                                 else ""),
+                "retry_crashed": bool(retry_var.get()),
                 "ppl_threshold_percent": ppl_var.get(),
                 "perplexity_file": perplexity_file_var.get(),
                 "cpu_only": cpu_only_var.get(),
@@ -2070,9 +2178,15 @@ class LlamaServerGUI:
                     "optimiser_weight": payload["metric_weight"],
                     "optimiser_context_size": payload["context_size"],
                     "optimiser_trials": payload["trials"],
+                    "optimiser_preset": payload["preset"],
                     "optimiser_avg_runs": payload["avg_runs"],
                     "optimiser_seed": payload["seed"],
                     "optimiser_verify_picks": payload["verify_picks"],
+                    "optimiser_min_score": payload["min_score"] or 0.0,
+                    "optimiser_cooldown_secs": payload["cooldown_secs"],
+                    "optimiser_journal_path": payload["journal_path"],
+                    "optimiser_resume_study": payload["resume_study"],
+                    "optimiser_retry_crashed": payload["retry_crashed"],
                     "optimiser_ppl_threshold_percent": payload["ppl_threshold_percent"],
                     "optimiser_cpu_only": payload["cpu_only"],
                     "perplexity_file": payload["perplexity_file"],
@@ -2100,9 +2214,9 @@ class LlamaServerGUI:
         ttk.Button(btn_row, text="Start", command=_ok).pack(side="left", padx=6)
         ttk.Button(btn_row, text="Cancel", command=_cancel).pack(side="left", padx=6)
 
-        self._restore_window_geometry(dlg, "window_geometry_optimiser_settings", 650, 460)
-        self._ensure_min_geometry(dlg, 650, 460)
-        dlg.minsize(650, 460)
+        self._restore_window_geometry(dlg, "window_geometry_optimiser_settings", 650, 560)
+        self._ensure_min_geometry(dlg, 650, 560)
+        dlg.minsize(650, 560)
         self._bind_window_geometry_persistence("window_geometry_optimiser_settings", dlg)
 
         try:
@@ -2629,9 +2743,15 @@ class LlamaServerGUI:
             cache_k_locked=cfg.get("cache_k_locked"),
             cache_v_locked=cfg.get("cache_v_locked"),
             trials=cfg["trials"],
+            preset=cfg.get("preset", "standard"),
             avg_runs=cfg["avg_runs"],
             seed=cfg["seed"],
             verify_picks=cfg.get("verify_picks", 2),
+            min_score=cfg.get("min_score"),
+            cooldown_secs=float(cfg.get("cooldown_secs", 5.0)),
+            journal_path=(cfg.get("journal_path") or None),
+            resume_study=(cfg.get("resume_study") or None),
+            retry_crashed=bool(cfg.get("retry_crashed", False)),
         )
 
         # Run optimiser
