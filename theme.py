@@ -137,6 +137,8 @@ TOOLTIPS = {
     "perplexity_file": "Text file used for perplexity validation",
     "ppl_threshold": "Max PPL degradation allowed (%)",
     "metric_weight": "Weight for throughput vs latency in scoring",
+    "dark_mode": "Switch to dark theme",
+    "light_mode": "Switch to light theme",
 }
 
 
@@ -179,3 +181,76 @@ def get_font(size=FONT_SIZE_NORMAL, weight=FONT_WEIGHT_NORMAL, mono=False):
     """Return a font tuple."""
     family = FONT_MONO if mono else FONT_FAMILY
     return (family, size, weight)
+
+
+# --- Theme application ---
+def apply_theme(root, dark_mode=False):
+    """Apply theme colors to all ttk styles and tk widgets in the widget tree."""
+    colors = get_colors(dark_mode)
+    style = ttk.Style(root)
+    
+    # Configure ttk styles
+    style.configure(".", background=colors["bg"], foreground=colors["fg"])
+    style.configure("TFrame", background=colors["bg"])
+    style.configure("TLabel", background=colors["bg"], foreground=colors["fg"])
+    style.configure("TButton", background=colors["bg"], foreground=colors["fg"])
+    style.configure("TEntry", fieldbackground=colors["bg"], foreground=colors["fg"])
+    style.configure("TSpinbox", fieldbackground=colors["bg"], foreground=colors["fg"])
+    style.configure("TCombobox", fieldbackground=colors["bg"], foreground=colors["fg"])
+    style.configure("TLabelframe", background=colors["bg"], foreground=colors["fg"])
+    style.configure("TLabelframe.Label", background=colors["bg"], foreground=colors["fg"])
+    style.configure("TScrollbar", background=colors["bg"], troughcolor=colors["border"])
+    style.configure("TCheckbutton", background=colors["bg"], foreground=colors["fg"])
+    style.configure("TRadiobutton", background=colors["bg"], foreground=colors["fg"])
+    style.configure("TProgressbar", background=colors["accent"], troughcolor=colors["border"])
+    
+    # Map states for buttons
+    style.map("TButton",
+        background=[("active", colors["accent_hover"]), ("disabled", colors["disabled_bg"])],
+        foreground=[("disabled", colors["disabled_fg"])]
+    )
+    style.map("TEntry",
+        fieldbackground=[("disabled", colors["disabled_bg"])],
+        foreground=[("disabled", colors["disabled_fg"])]
+    )
+    style.map("TSpinbox",
+        fieldbackground=[("disabled", colors["disabled_bg"])],
+        foreground=[("disabled", colors["disabled_fg"])]
+    )
+    style.map("TCombobox",
+        fieldbackground=[("disabled", colors["disabled_bg"])],
+        foreground=[("disabled", colors["disabled_fg"])]
+    )
+    style.map("TCheckbutton",
+        background=[("active", colors["accent_hover"])],
+        foreground=[("disabled", colors["disabled_fg"])]
+    )
+    
+    # Recursively apply to all tk widgets
+    def _apply_to_widget(widget):
+        try:
+            wclass = widget.winfo_class()
+            if wclass in ("Frame", "Labelframe", "Toplevel"):
+                widget.configure(background=colors["bg"])
+            elif wclass in ("Label", "Button", "Checkbutton", "Radiobutton"):
+                widget.configure(background=colors["bg"], foreground=colors["fg"])
+            elif wclass in ("Entry", "Spinbox", "Text"):
+                widget.configure(background=colors["bg"], foreground=colors["fg"],
+                               insertbackground=colors["fg"],
+                               selectbackground=colors["accent"],
+                               selectforeground=colors["fg"])
+            elif wclass == "Canvas":
+                widget.configure(background=colors["bg"])
+            elif wclass == "Scrollbar":
+                widget.configure(background=colors["bg"], troughcolor=colors["border"])
+        except Exception:
+            pass
+        for child in widget.winfo_children():
+            _apply_to_widget(child)
+    
+    _apply_to_widget(root)
+    
+    # Force update
+    root.update_idletasks()
+    
+    return colors

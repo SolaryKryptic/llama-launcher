@@ -13,7 +13,7 @@ import sys as _sys2
 
 # Theme and UI helpers
 from theme import (
-    get_colors, get_font, TOOLTIPS,
+    get_colors, get_font, apply_theme, TOOLTIPS,
     FONT_FAMILY, FONT_MONO, FONT_SIZE_NORMAL, FONT_SIZE_SMALL,
     FONT_SIZE_TITLE, FONT_SIZE_SECTION, FONT_WEIGHT_BOLD,
     PAD_X, PAD_Y, PAD_SMALL, PAD_MEDIUM, PAD_LARGE,
@@ -548,6 +548,9 @@ class LlamaServerGUI:
         # Load saved config
         saved = _load_config()
         saved_flags = saved.pop("flags", {})
+        # Load UI preferences
+        self._dark_mode = saved.get("dark_mode", False)
+        self._collapsed_sections = set(saved.get("collapsed_sections", []))
         if saved_flags:
             import sys as _sys2
             global _sys2
@@ -786,6 +789,8 @@ class LlamaServerGUI:
             data = _load_config()
             data["flags"] = self.config.to_dict()
             data["last_folder"] = self._last_folder
+            data["dark_mode"] = getattr(self, "_dark_mode", False)
+            data["collapsed_sections"] = list(getattr(self, "_collapsed_sections", set()))
             try:
                 data["window_geometry"] = self.root.geometry()
                 data["window_state"] = self.root.state()
@@ -795,6 +800,73 @@ class LlamaServerGUI:
         except Exception:
             pass
         self.root.destroy()
+
+    def _toggle_theme(self):
+        """Toggle between light and dark theme."""
+        self._dark_mode = not self._dark_mode
+        colors = apply_theme(self.root, self._dark_mode)
+        # Update canvas background
+        if hasattr(self, 'canvas'):
+            self.canvas.configure(bg=colors["bg"])
+        # Update theme button text
+        if hasattr(self, '_theme_btn'):
+            self._theme_btn.configure(text="🌙 Dark" if not self._dark_mode else "☀️ Light")
+            # Update tooltip
+            for bind in self._theme_btn.bind():
+                pass
+            # Re-add tooltip with new key
+            self._theme_btn.unbind("<Enter>")
+            self._theme_btn.unbind("<Leave>")
+            self._theme_btn.unbind("<ButtonPress>")
+            add_tooltip(self._theme_btn, "dark_mode" if not self._dark_mode else "light_mode")
+        # Update command preview syntax highlighting colors
+        self._update_command()
+
+    def show_toast(self, message, duration_ms=2000):
+        """Show a temporary toast notification near the mouse cursor."""
+        try:
+            x = self.root.winfo_pointerx() + 20
+            y = self.root.winfo_pointery() + 10
+        except Exception:
+            x = self.root.winfo_rootx() + self.root.winfo_width() // 2
+            y = self.root.winfo_rooty() + self.root.winfo_height() // 2
+        
+        toast = tk.Toplevel(self.root)
+        toast.wm_overrideredirect(True)
+        toast.wm_geometry(f"+{x}+{y}")
+        toast.attributes("-topmost", True)
+        toast.attributes("-alpha", 0.0)
+        
+        colors = get_colors(self._dark_mode)
+        label = tk.Label(
+            toast, text=message, justify="left",
+            background=colors["tooltip_bg"], foreground=colors["tooltip_fg"],
+            relief="solid", borderwidth=1,
+            font=get_font(FONT_SIZE_SMALL), wraplength=300,
+            padx=12, pady=6
+        )
+        label.pack()
+        
+        # Fade in
+        def fade_in(step=0):
+            if step <= 10:
+                toast.attributes("-alpha", step / 10.0)
+                toast.after(15, lambda: fade_in(step + 1))
+        
+        # Fade out and destroy
+        def fade_out(step=10):
+            if step >= 0:
+                toast.attributes("-alpha", step / 10.0)
+                if step > 0:
+                    toast.after(15, lambda: fade_out(step - 1))
+                else:
+                    try:
+                        toast.destroy()
+                    except Exception:
+                        pass
+        
+        fade_in()
+        toast.after(duration_ms, fade_out)
 
     def _restore_window_geometry(self, win, config_key, default_width, default_height):
         """Restore Toplevel geometry from saved config or center default window"""
@@ -1078,25 +1150,28 @@ class LlamaServerGUI:
         outer_frame.grid_rowconfigure(2, weight=0)
 
         # Title label at the top, bold and larger for clarity
+        title_frame = ttk.Frame(outer_frame)
+        title_frame.grid(row=0, column=0, sticky="ew", pady=(8, 4))
+        title_frame.columnconfigure(0, weight=1)
+        
         title_label = ttk.Label(
-            outer_frame, text="llama-server command generator", anchor="center",
+            title_frame, text="llama-server command generator", anchor="center",
             font=("Segoe UI", 16, "bold")
         )
-        title_label.grid(row=0, column=0, sticky="ew", pady=(8, 4))
-
-        # Scrollable canvas area holding the section frames
-        inner_frame = ttk.Frame(outer_frame)
-        inner_frame.grid(row=1, column=0, sticky="nswe")
-        outer_frame.columnconfigure(0, weight=1)
-
-        # Configure the canvas so it resizes when the window changes
-        def _on_canvas_resize(event):
-            if hasattr(self, 'canvas') and event.widget == inner_frame:
-                try: self.canvas.config(width=event.width - 20)
-                except Exception: pass
+        title_label.grid(row=0, column=0, sticky="ew")
         
-        inner_frame.bind("<Configure>", _on_canvas_resize)
-        self.canvas = tk.Canvas(inner_frame, highlightthickness=0, bg="#f5f5f5")
+        # Theme toggle button in title bar
+        self._theme_btn = ttk.Button(
+            title_frame, text="🌙 Dark" if not self._dark_mode else "☀️ Light",
+            width=10, command=self._toggle_theme
+        )
+        self._theme_btn.grid(row=0, column=1, sticky="e", padx=(0, 8))
+        add_tooltip(self._theme_btn, "dark_mode" if not self._dark_mode else "light_mode")
+
+        # Apply initial theme
+        apply_theme(self.root, self._dark_mode)
+        colors = get_colors(self._dark_mode)
+        self.canvas = tk.Canvas(inner_frame, highlightthickness=0, bg=colors["bg"])
         scrollbar = ttk.Scrollbar(
             inner_frame, orient="vertical", command=self.canvas.yview
         )
@@ -1215,10 +1290,58 @@ class LlamaServerGUI:
         self._update_command()
 
 
+    def _make_collapsible_section(self, parent, title, section_name):
+        """Create a collapsible LabelFrame with a toggle button in the header.
+        Returns (container_frame, content_frame) where content_frame is the inner frame to pack widgets into."""
+        # Container that holds the header and content
+        container = ttk.Frame(parent)
+        container.pack(fill="both", padx=6, pady=4)
+        
+        # Header frame with title and toggle button
+        header = ttk.Frame(container)
+        header.pack(fill="x")
+        
+        # Toggle button (▼/▶)
+        is_collapsed = section_name in self._collapsed_sections
+        toggle_text = "▶" if is_collapsed else "▼"
+        toggle_btn = ttk.Button(header, text=toggle_text, width=3,
+                               command=lambda: self._toggle_section(section_name, container, content, toggle_btn))
+        toggle_btn.pack(side="left")
+        
+        # Title label
+        title_label = ttk.Label(header, text=title, font=("Segoe UI", 10, "bold"))
+        title_label.pack(side="left", padx=(4, 0))
+        
+        # Content frame (the actual LabelFrame)
+        content = ttk.LabelFrame(container, text="", padding=(8, 6))
+        if not is_collapsed:
+            content.pack(fill="both", expand=True)
+        
+        # Store reference for toggle
+        if not hasattr(self, '_section_widgets'):
+            self._section_widgets = {}
+        self._section_widgets[section_name] = (container, content, toggle_btn)
+        
+        return container, content
+
+    def _toggle_section(self, section_name, container, content, toggle_btn):
+        """Toggle section expanded/collapsed state."""
+        if section_name in self._collapsed_sections:
+            # Expand
+            self._collapsed_sections.discard(section_name)
+            content.pack(fill="both", expand=True, before=None)
+            toggle_btn.configure(text="▼")
+        else:
+            # Collapse
+            self._collapsed_sections.add(section_name)
+            content.pack_forget()
+            toggle_btn.configure(text="▶")
+        # Update scroll region
+        self.root.after_idle(lambda: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+
     def _section_model_loading(self, parent):
         """model loading section, browse button, no mmap, mlock toggles"""
-        frame = ttk.LabelFrame(parent, text="Model Loading", padding=(8, 6))
-        frame.pack(fill="both", padx=6, pady=4)
+        container, frame = self._make_collapsible_section(parent, "Model Loading", "Model Loading")
 
         # Browse row with a file dialog so the user can pick a .gguf model
         btn_row = ttk.Frame(frame)
@@ -1303,8 +1426,7 @@ class LlamaServerGUI:
 
     def _section_context_gpu(self, parent):
         """context size and gpu layers section, inline on the same row"""
-        frame = ttk.LabelFrame(parent, text="Performance", padding=(8, 6))
-        frame.pack(fill="both", padx=6, pady=4)
+        container, frame = self._make_collapsible_section(parent, "Performance", "Performance")
         frame.grid_columnconfigure(0, weight=1)
 
         ctx_frame = ttk.Frame(frame)
@@ -1677,8 +1799,7 @@ class LlamaServerGUI:
 
     def _section_server_settings(self, parent):
         """server settings section, always visible, sensible defaults"""
-        frame = ttk.LabelFrame(parent, text="Network & Server", padding=(8, 6))
-        frame.pack(fill="both", padx=6, pady=4)
+        container, frame = self._make_collapsible_section(parent, "Network & Server", "Network & Server")
 
         # Host and Port row
         net_row = ttk.Frame(frame)
@@ -1784,7 +1905,8 @@ class LlamaServerGUI:
 
     def _section_sampling_params(self, parent):
         """sampling parameters section, always visible, two column grid"""
-        samp_frame = ttk.Frame(parent)
+        container, frame = self._make_collapsible_section(parent, "Sampling Parameters", "Sampling Parameters")
+        samp_frame = ttk.Frame(frame)
         samp_frame.pack(fill="both", padx=6, pady=4)
 
         sv_temp = self._tk["temperature"]
@@ -1925,8 +2047,7 @@ class LlamaServerGUI:
 
     def _section_hardware_info(self, parent):
         """read only hardware info display, cpu, gpu, vram, ram"""
-        frame = ttk.LabelFrame(parent, text="System Hardware", padding=(8, 6))
-        frame.pack(fill="both", padx=6, pady=4)
+        container, frame = self._make_collapsible_section(parent, "System Hardware", "System Hardware")
 
         cores = self._hw.get('CPU_CORES', '')
         threads = self._hw.get('CPU_THREADS', '')
@@ -2654,7 +2775,8 @@ class LlamaServerGUI:
         btn_frame = ttk.Frame(win)
         btn_frame.pack(fill="x", pady=8)
         ttk.Button(btn_frame, text="Apply Settings", command=_apply).pack(side="right", padx=4)
-        ttk.Button(btn_frame, text="Copy Flags", command=_copy).pack(side="right", padx=4)
+        copy_btn = ttk.Button(btn_frame, text="Copy Flags", command=lambda: (self._copy_to_clipboard(recommended_flags), self.show_toast("Flags copied!")))
+        copy_btn.pack(side="right", padx=4)
         ttk.Button(btn_frame, text="Close", command=_close_results_window).pack(side="right")
 
 
@@ -2824,6 +2946,12 @@ class LlamaServerGUI:
         cmd = self.config.generate_command()
         self.root.clipboard_clear()
         self.root.clipboard_append(cmd)
+        self.show_toast("Copied!")
+
+    def _copy_to_clipboard(self, text):
+        """Copy text to clipboard."""
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
 
     def _save_bat_command(self):
         """Prompt user to choose a folder, name the file, and save the command as a .bat file."""
@@ -2908,7 +3036,7 @@ class LlamaServerGUI:
             with open(filepath, "w", encoding="utf-8") as f:
                 f.write(cmd)
             _save_bat_folder(result["folder"])
-            messagebox.showinfo("Saved", f"Saved as:\n{filepath}")
+            self.show_toast(f"Saved as {os.path.basename(filepath)}")
         except Exception as e:
             messagebox.showerror("Error", f"Could not save file:\n{e}")
 
