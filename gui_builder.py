@@ -822,7 +822,7 @@ class LlamaServerGUI:
         # Update command preview syntax highlighting colors
         self._update_command()
 
-    def show_toast(self, message, duration_ms=2000):
+    def show_toast(self, message, duration_ms=1000):
         """Show a temporary toast notification near the mouse cursor."""
         try:
             x = self.root.winfo_pointerx() + 20
@@ -847,16 +847,16 @@ class LlamaServerGUI:
         )
         label.pack()
         
-        # Fade in
+        # Fade in (5 steps = 75ms)
         def fade_in(step=0):
-            if step <= 10:
-                toast.attributes("-alpha", step / 10.0)
+            if step <= 5:
+                toast.attributes("-alpha", step / 5.0)
                 toast.after(15, lambda: fade_in(step + 1))
         
-        # Fade out and destroy
-        def fade_out(step=10):
+        # Fade out and destroy (5 steps = 75ms)
+        def fade_out(step=5):
             if step >= 0:
-                toast.attributes("-alpha", step / 10.0)
+                toast.attributes("-alpha", step / 5.0)
                 if step > 0:
                     toast.after(15, lambda: fade_out(step - 1))
                 else:
@@ -866,7 +866,9 @@ class LlamaServerGUI:
                         pass
         
         fade_in()
-        toast.after(duration_ms, fade_out)
+        # Visible time = duration_ms - fade_in - fade_out = 1000 - 75 - 75 = 850ms
+        visible_ms = max(100, duration_ms - 150)
+        toast.after(visible_ms, fade_out)
 
     def _restore_window_geometry(self, win, config_key, default_width, default_height):
         """Restore Toplevel geometry from saved config or center default window"""
