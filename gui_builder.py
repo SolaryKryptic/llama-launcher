@@ -12,6 +12,18 @@ from optimiser_script import BENCH_PORT, kill_port
 from optimiser_script import SEARCH_PRESETS, describe_preset_plan
 import sys as _sys2
 
+# Theme and UI helpers
+from theme import (
+    get_colors, get_font, apply_theme, TOOLTIPS,
+    FONT_FAMILY, FONT_MONO, FONT_SIZE_NORMAL, FONT_SIZE_SMALL,
+    FONT_SIZE_TITLE, FONT_SIZE_SECTION, FONT_WEIGHT_BOLD,
+    PAD_X, PAD_Y, PAD_SMALL, PAD_MEDIUM, PAD_LARGE,
+    SECTION_PADDING, BUTTON_PADX, ENTRY_WIDTH_SMALL, ENTRY_WIDTH_MEDIUM,
+    DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT,
+    LIGHT_BG, LIGHT_FG, LIGHT_SECONDARY_FG, LIGHT_TOOLTIP_BG, LIGHT_TOOLTIP_FG,
+    LIGHT_WARNING, LIGHT_SUCCESS, LIGHT_ERROR, LIGHT_DISABLED_BG, LIGHT_DISABLED_FG,
+)
+
 import sys
 if getattr(sys, 'frozen', False):
     _CONFIG_PATH = os.path.join(os.path.dirname(sys.executable), "llama_gui_data.json")
@@ -52,6 +64,74 @@ def _save_bat_folder(folder):
     data = _load_config()
     data["last_bat_folder"] = folder
     _save_config(data)
+
+
+# --- Tooltip helper ---
+class Tooltip:
+    """Simple hover tooltip for any widget."""
+
+    def __init__(self, widget, text, delay_ms=500, wrap_length=300):
+        self.widget = widget
+        self.text = text
+        self.delay_ms = delay_ms
+        self.wrap_length = wrap_length
+        self.tip_window = None
+        self.after_id = None
+        widget.bind("<Enter>", self._on_enter, add="+")
+        widget.bind("<Leave>", self._on_leave, add="+")
+        widget.bind("<ButtonPress>", self._on_leave, add="+")
+
+    def _on_enter(self, event=None):
+        self._cancel_after()
+        self.after_id = self.widget.after(self.delay_ms, self._show_tip)
+
+    def _on_leave(self, event=None):
+        self._cancel_after()
+        self._hide_tip()
+
+    def _cancel_after(self):
+        if self.after_id is not None:
+            try:
+                self.widget.after_cancel(self.after_id)
+            except Exception:
+                pass
+            self.after_id = None
+
+    def _show_tip(self):
+        if self.tip_window is not None:
+            return
+        try:
+            x = self.widget.winfo_rootx() + 20
+            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+        except Exception:
+            return
+        self.tip_window = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        colors = get_colors()  # light theme by default
+        label = tk.Label(
+            tw, text=self.text, justify="left",
+            background=colors["tooltip_bg"], foreground=colors["tooltip_fg"],
+            relief="solid", borderwidth=1,
+            font=get_font(FONT_SIZE_SMALL), wraplength=self.wrap_length,
+            padx=6, pady=3
+        )
+        label.pack()
+
+    def _hide_tip(self):
+        if self.tip_window is not None:
+            try:
+                self.tip_window.destroy()
+            except Exception:
+                pass
+            self.tip_window = None
+
+
+def add_tooltip(widget, key):
+    """Attach a tooltip to widget using TOOLTIPS dict key."""
+    text = TOOLTIPS.get(key)
+    if text:
+        Tooltip(widget, text)
 
 
 # data model and command generation
@@ -469,6 +549,9 @@ class LlamaServerGUI:
         # Load saved config
         saved = _load_config()
         saved_flags = saved.pop("flags", {})
+        # Load UI preferences
+        self._dark_mode = saved.get("dark_mode", False)
+        self._collapsed_sections = set(saved.get("collapsed_sections", []))
         if saved_flags:
             import sys as _sys2
             global _sys2
@@ -707,6 +790,8 @@ class LlamaServerGUI:
             data = _load_config()
             data["flags"] = self.config.to_dict()
             data["last_folder"] = self._last_folder
+            data["dark_mode"] = getattr(self, "_dark_mode", False)
+            data["collapsed_sections"] = list(getattr(self, "_collapsed_sections", set()))
             try:
                 data["window_geometry"] = self.root.geometry()
                 data["window_state"] = self.root.state()
@@ -716,6 +801,75 @@ class LlamaServerGUI:
         except Exception:
             pass
         self.root.destroy()
+
+    def _toggle_theme(self):
+        """Toggle between light and dark theme."""
+        self._dark_mode = not self._dark_mode
+        colors = apply_theme(self.root, self._dark_mode)
+        # Update canvas background
+        if hasattr(self, 'canvas'):
+            self.canvas.configure(bg=colors["bg"])
+        # Update theme button text
+        if hasattr(self, '_theme_btn'):
+            self._theme_btn.configure(text="🌙 Dark" if not self._dark_mode else "☀️ Light")
+            # Update tooltip
+            for bind in self._theme_btn.bind():
+                pass
+            # Re-add tooltip with new key
+            self._theme_btn.unbind("<Enter>")
+            self._theme_btn.unbind("<Leave>")
+            self._theme_btn.unbind("<ButtonPress>")
+            add_tooltip(self._theme_btn, "dark_mode" if not self._dark_mode else "light_mode")
+        # Update command preview syntax highlighting colors
+        self._update_command()
+
+    def show_toast(self, message, duration_ms=1000):
+        """Show a temporary toast notification near the mouse cursor."""
+        try:
+            x = self.root.winfo_pointerx() + 20
+            y = self.root.winfo_pointery() + 10
+        except Exception:
+            x = self.root.winfo_rootx() + self.root.winfo_width() // 2
+            y = self.root.winfo_rooty() + self.root.winfo_height() // 2
+        
+        toast = tk.Toplevel(self.root)
+        toast.wm_overrideredirect(True)
+        toast.wm_geometry(f"+{x}+{y}")
+        toast.attributes("-topmost", True)
+        toast.attributes("-alpha", 0.0)
+        
+        colors = get_colors(self._dark_mode)
+        label = tk.Label(
+            toast, text=message, justify="left",
+            background=colors["tooltip_bg"], foreground=colors["tooltip_fg"],
+            relief="solid", borderwidth=1,
+            font=get_font(FONT_SIZE_SMALL), wraplength=300,
+            padx=12, pady=6
+        )
+        label.pack()
+        
+        # Fade in (5 steps = 75ms)
+        def fade_in(step=0):
+            if step <= 5:
+                toast.attributes("-alpha", step / 5.0)
+                toast.after(15, lambda: fade_in(step + 1))
+        
+        # Fade out and destroy (5 steps = 75ms)
+        def fade_out(step=5):
+            if step >= 0:
+                toast.attributes("-alpha", step / 5.0)
+                if step > 0:
+                    toast.after(15, lambda: fade_out(step - 1))
+                else:
+                    try:
+                        toast.destroy()
+                    except Exception:
+                        pass
+        
+        fade_in()
+        # Visible time = duration_ms - fade_in - fade_out = 1000 - 75 - 75 = 850ms
+        visible_ms = max(100, duration_ms - 150)
+        toast.after(visible_ms, fade_out)
 
     def _restore_window_geometry(self, win, config_key, default_width, default_height):
         """Restore Toplevel geometry from saved config or center default window"""
@@ -999,25 +1153,28 @@ class LlamaServerGUI:
         outer_frame.grid_rowconfigure(2, weight=0)
 
         # Title label at the top, bold and larger for clarity
+        title_frame = ttk.Frame(outer_frame)
+        title_frame.grid(row=0, column=0, sticky="ew", pady=(8, 4))
+        title_frame.columnconfigure(0, weight=1)
+        
         title_label = ttk.Label(
-            outer_frame, text="llama-server command generator", anchor="center",
+            title_frame, text="llama-server command generator", anchor="center",
             font=("Segoe UI", 16, "bold")
         )
-        title_label.grid(row=0, column=0, sticky="ew", pady=(8, 4))
-
-        # Scrollable canvas area holding the section frames
-        inner_frame = ttk.Frame(outer_frame)
-        inner_frame.grid(row=1, column=0, sticky="nswe")
-        outer_frame.columnconfigure(0, weight=1)
-
-        # Configure the canvas so it resizes when the window changes
-        def _on_canvas_resize(event):
-            if hasattr(self, 'canvas') and event.widget == inner_frame:
-                try: self.canvas.config(width=event.width - 20)
-                except Exception: pass
+        title_label.grid(row=0, column=0, sticky="ew")
         
-        inner_frame.bind("<Configure>", _on_canvas_resize)
-        self.canvas = tk.Canvas(inner_frame, highlightthickness=0, bg="#f5f5f5")
+        # Theme toggle button in title bar
+        self._theme_btn = ttk.Button(
+            title_frame, text="🌙 Dark" if not self._dark_mode else "☀️ Light",
+            width=10, command=self._toggle_theme
+        )
+        self._theme_btn.grid(row=0, column=1, sticky="e", padx=(0, 8))
+        add_tooltip(self._theme_btn, "dark_mode" if not self._dark_mode else "light_mode")
+
+        # Apply initial theme
+        apply_theme(self.root, self._dark_mode)
+        colors = get_colors(self._dark_mode)
+        self.canvas = tk.Canvas(inner_frame, highlightthickness=0, bg=colors["bg"])
         scrollbar = ttk.Scrollbar(
             inner_frame, orient="vertical", command=self.canvas.yview
         )
@@ -1072,14 +1229,17 @@ class LlamaServerGUI:
             copy_frame, text="\U0001F4CB Copy", command=self._copy_command
         )
         self._copy_btn.pack(side="right", padx=(0, 4))
+        add_tooltip(self._copy_btn, "copy_command")
         self._run_btn = ttk.Button(
             copy_frame, text="\u25B6 Run in CMD", command=self._run_in_cmd
         )
         self._run_btn.pack(side="right", padx=(0, 4))
+        add_tooltip(self._run_btn, "run_command")
         self._save_btn = ttk.Button(
             copy_frame, text="\U0001F4BE Save as .bat", command=self._save_bat_command
         )
         self._save_btn.pack(side="right")
+        add_tooltip(self._save_btn, "save_bat")
 
         self.canvas.configure(yscrollcommand=scrollbar.set)
         self.canvas.pack(side="left", fill="both", expand=True, pady=(0, 4))
@@ -1133,10 +1293,58 @@ class LlamaServerGUI:
         self._update_command()
 
 
+    def _make_collapsible_section(self, parent, title, section_name):
+        """Create a collapsible LabelFrame with a toggle button in the header.
+        Returns (container_frame, content_frame) where content_frame is the inner frame to pack widgets into."""
+        # Container that holds the header and content
+        container = ttk.Frame(parent)
+        container.pack(fill="both", padx=6, pady=4)
+        
+        # Header frame with title and toggle button
+        header = ttk.Frame(container)
+        header.pack(fill="x")
+        
+        # Toggle button (▼/▶)
+        is_collapsed = section_name in self._collapsed_sections
+        toggle_text = "▶" if is_collapsed else "▼"
+        toggle_btn = ttk.Button(header, text=toggle_text, width=3,
+                               command=lambda: self._toggle_section(section_name, container, content, toggle_btn))
+        toggle_btn.pack(side="left")
+        
+        # Title label
+        title_label = ttk.Label(header, text=title, font=("Segoe UI", 10, "bold"))
+        title_label.pack(side="left", padx=(4, 0))
+        
+        # Content frame (the actual LabelFrame)
+        content = ttk.LabelFrame(container, text="", padding=(8, 6))
+        if not is_collapsed:
+            content.pack(fill="both", expand=True)
+        
+        # Store reference for toggle
+        if not hasattr(self, '_section_widgets'):
+            self._section_widgets = {}
+        self._section_widgets[section_name] = (container, content, toggle_btn)
+        
+        return container, content
+
+    def _toggle_section(self, section_name, container, content, toggle_btn):
+        """Toggle section expanded/collapsed state."""
+        if section_name in self._collapsed_sections:
+            # Expand
+            self._collapsed_sections.discard(section_name)
+            content.pack(fill="both", expand=True, before=None)
+            toggle_btn.configure(text="▼")
+        else:
+            # Collapse
+            self._collapsed_sections.add(section_name)
+            content.pack_forget()
+            toggle_btn.configure(text="▶")
+        # Update scroll region
+        self.root.after_idle(lambda: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+
     def _section_model_loading(self, parent):
         """model loading section, browse button, no mmap, mlock toggles"""
-        frame = ttk.LabelFrame(parent, text="Model Loading", padding=(8, 6))
-        frame.pack(fill="both", padx=6, pady=4)
+        container, frame = self._make_collapsible_section(parent, "Model Loading", "Model Loading")
 
         # Browse row with a file dialog so the user can pick a .gguf model
         btn_row = ttk.Frame(frame)
@@ -1144,9 +1352,11 @@ class LlamaServerGUI:
 
         browse_btn = ttk.Button(btn_row, text="Browse local files...", command=self._browse_model)
         browse_btn.pack(side="left", padx=(0, 2))
+        add_tooltip(browse_btn, "browse_model")
 
         find_btn = ttk.Button(btn_row, text="Find a model online...", command=self._open_huggingface)
         find_btn.pack(side="left", padx=(0, 6))
+        add_tooltip(find_btn, "find_model")
 
         # Read-only label shows the selected model path and updates automatically
         self.model_path_label = tk.Label(
@@ -1177,16 +1387,29 @@ class LlamaServerGUI:
         ml_bool_mlock = self._tk["mlock"]
         nw_bool_no_warmup = self._tk["no_warmup"]
 
-        tk.Checkbutton(check_row, text="No-MMAP", variable=lv_bool_no_mmap).pack(side="left")
-        tk.Checkbutton(check_row, text="MLock", variable=ml_bool_mlock).pack(side="left", padx=(12, 0))
-        tk.Checkbutton(check_row, text="No Warmup", variable=nw_bool_no_warmup).pack(side="left", padx=(12, 0))
+        cb_no_mmap = tk.Checkbutton(check_row, text="No-MMAP", variable=lv_bool_no_mmap)
+        cb_no_mmap.pack(side="left")
+        add_tooltip(cb_no_mmap, "no_mmap")
+
+        cb_mlock = tk.Checkbutton(check_row, text="MLock", variable=ml_bool_mlock)
+        cb_mlock.pack(side="left", padx=(12, 0))
+        add_tooltip(cb_mlock, "mlock")
+
+        cb_no_warmup = tk.Checkbutton(check_row, text="No Warmup", variable=nw_bool_no_warmup)
+        cb_no_warmup.pack(side="left", padx=(12, 0))
+        add_tooltip(cb_no_warmup, "no_warmup")
+
         iv_mmproj_enabled = self._tk["mmproj_enabled"]
         sv_mmproj_path = self._tk["mmproj_path"]
-        tk.Checkbutton(check_row, text="Use mmproj", variable=iv_mmproj_enabled).pack(side="left", padx=(12, 0))
+        cb_mmproj = tk.Checkbutton(check_row, text="Use mmproj", variable=iv_mmproj_enabled)
+        cb_mmproj.pack(side="left", padx=(12, 0))
+        add_tooltip(cb_mmproj, "mmproj_enabled")
 
         self.mmproj_browse_frame = ttk.Frame(check_row)
         self.mmproj_browse_frame.pack(side="left", padx=(6, 0))
-        ttk.Button(self.mmproj_browse_frame, text="Browse mmproj...", command=self._browse_mmproj).pack(side="left", padx=(0, 4))
+        mmproj_browse_btn = ttk.Button(self.mmproj_browse_frame, text="Browse mmproj...", command=self._browse_mmproj)
+        mmproj_browse_btn.pack(side="left", padx=(0, 4))
+        add_tooltip(mmproj_browse_btn, "mmproj_path")
         self.mmproj_path_label = tk.Label(self.mmproj_browse_frame, text="", anchor="w", justify="left", foreground="#666")
         self.mmproj_path_label.pack(side="left", fill="x", expand=True)
         self._update_mmproj_ui()
@@ -1206,8 +1429,7 @@ class LlamaServerGUI:
 
     def _section_context_gpu(self, parent):
         """context size and gpu layers section, inline on the same row"""
-        frame = ttk.LabelFrame(parent, text="Performance", padding=(8, 6))
-        frame.pack(fill="both", padx=6, pady=4)
+        container, frame = self._make_collapsible_section(parent, "Performance", "Performance")
         frame.grid_columnconfigure(0, weight=1)
 
         ctx_frame = ttk.Frame(frame)
@@ -1226,7 +1448,9 @@ class LlamaServerGUI:
                 pass
 
         ttk.Label(ctx_frame, text="Context").pack(side="left")
-        ttk.Entry(ctx_frame, textvariable=iv_ctx_var, width=8).pack(side="left", padx=(4, 0))
+        ctx_entry = ttk.Entry(ctx_frame, textvariable=iv_ctx_var, width=8)
+        ctx_entry.pack(side="left", padx=(4, 0))
+        add_tooltip(ctx_entry, "ctx_size_value")
 
         def _ctx_value_trace(*_):
             try:
@@ -1279,6 +1503,7 @@ class LlamaServerGUI:
 
         spinbox_gpu = ttk.Spinbox(ctx_frame, from_=-1, to=99, textvariable=spinvar, width=5)
         spinbox_gpu.pack(side="left")
+        add_tooltip(spinbox_gpu, "n_gpu_layers")
 
         def _gpu_wheel(event):
             try:
@@ -1333,10 +1558,16 @@ class LlamaServerGUI:
         iv_flash_attn = self._tk["flash_attention"]
         iv_fit_on = self._tk["fit_on"]
         iv_fitt = self._tk["fitt"]
-        tk.Checkbutton(fa_row, text="Flash Attention (-fa)", variable=iv_flash_attn).pack(side="left")
-        tk.Checkbutton(fa_row, text="Fit On (--fit-on)", variable=iv_fit_on).pack(side="left", padx=(16, 0))
+        cb_fa = tk.Checkbutton(fa_row, text="Flash Attention (-fa)", variable=iv_flash_attn)
+        cb_fa.pack(side="left")
+        add_tooltip(cb_fa, "flash_attention")
+        cb_fit = tk.Checkbutton(fa_row, text="Fit On (--fit-on)", variable=iv_fit_on)
+        cb_fit.pack(side="left", padx=(16, 0))
+        add_tooltip(cb_fit, "fit_on")
         ttk.Label(fa_row, text="Fit Target").pack(side="left", padx=(8, 0))
-        ttk.Spinbox(fa_row, from_=1, to=65536, textvariable=iv_fitt, width=5).pack(side="left", padx=(2, 0))
+        fitt_spin = ttk.Spinbox(fa_row, from_=1, to=65536, textvariable=iv_fitt, width=5)
+        fitt_spin.pack(side="left", padx=(2, 0))
+        add_tooltip(fitt_spin, "fitt")
 
         # --- Speculative Decoding (row 2, full width) ---
         spec_frame = ttk.Frame(frame)
@@ -1356,27 +1587,41 @@ class LlamaServerGUI:
 
         spec_row = ttk.Frame(spec_frame)
         spec_row.pack(fill="x")
-        tk.Checkbutton(spec_row, text="Speculative Decoding", variable=iv_spec_enabled).pack(side="left")
+        cb_spec = tk.Checkbutton(spec_row, text="Speculative Decoding", variable=iv_spec_enabled)
+        cb_spec.pack(side="left")
+        add_tooltip(cb_spec, "spec_enabled")
 
         # Sub-options row (child of spec_frame same pack master)
         spec_sub_row = ttk.Frame(spec_frame)
         self._spec_sub_row = spec_sub_row
-        tk.Checkbutton(spec_sub_row, text="ngram-mod", variable=iv_spec_ngram).grid(row=0, column=0, sticky="w")
-        tk.Checkbutton(spec_sub_row, text="draft-mtp", variable=iv_spec_draft).grid(row=0, column=1, sticky="w", padx=(16, 0))
+        cb_ngram = tk.Checkbutton(spec_sub_row, text="ngram-mod", variable=iv_spec_ngram)
+        cb_ngram.grid(row=0, column=0, sticky="w")
+        add_tooltip(cb_ngram, "spec_type")
+        cb_draft = tk.Checkbutton(spec_sub_row, text="draft-mtp", variable=iv_spec_draft)
+        cb_draft.grid(row=0, column=1, sticky="w", padx=(16, 0))
+        add_tooltip(cb_draft, "spec_type")
 
         # Draft model inline block: browse button + label + max/min/p-min spinboxes
         spec_draft_row = ttk.Frame(spec_sub_row)
         self._spec_draft_row = spec_draft_row
         spec_draft_row.grid(row=1, column=0, columnspan=8, sticky="w", pady=(2, 0))
-        ttk.Button(spec_draft_row, text="Browse draft models...", command=self._browse_draft_model).pack(side="left", padx=(0, 4))
+        draft_browse = ttk.Button(spec_draft_row, text="Browse draft models...", command=self._browse_draft_model)
+        draft_browse.pack(side="left", padx=(0, 4))
+        add_tooltip(draft_browse, "draft_model_path")
         self.draft_model_label = tk.Label(spec_draft_row, text="", anchor="w", justify="left", foreground="#666")
         self.draft_model_label.pack(side="left", padx=(0, 8))
         ttk.Label(spec_draft_row, text="Max:").pack(side="left")
-        ttk.Spinbox(spec_draft_row, from_=0, to=64, textvariable=iv_spec_draft_max, width=4).pack(side="left", padx=(2, 8))
+        spin_max = ttk.Spinbox(spec_draft_row, from_=0, to=64, textvariable=iv_spec_draft_max, width=4)
+        spin_max.pack(side="left", padx=(2, 8))
+        add_tooltip(spin_max, "spec_draft_n_max")
         ttk.Label(spec_draft_row, text="Min:").pack(side="left")
-        ttk.Spinbox(spec_draft_row, from_=0, to=64, textvariable=iv_spec_draft_min, width=4).pack(side="left", padx=(2, 8))
+        spin_min = ttk.Spinbox(spec_draft_row, from_=0, to=64, textvariable=iv_spec_draft_min, width=4)
+        spin_min.pack(side="left", padx=(2, 8))
+        add_tooltip(spin_min, "spec_draft_n_min")
         ttk.Label(spec_draft_row, text="P Min:").pack(side="left")
-        ttk.Spinbox(spec_draft_row, from_=0.0, to=0.7, increment=0.1, textvariable=iv_spec_draft_p_min, width=4, format="%.1f").pack(side="left", padx=(2, 0))
+        spin_pmin = ttk.Spinbox(spec_draft_row, from_=0.0, to=0.7, increment=0.1, textvariable=iv_spec_draft_p_min, width=4, format="%.1f")
+        spin_pmin.pack(side="left", padx=(2, 0))
+        add_tooltip(spin_pmin, "spec_draft_p_min")
 
         def _update_spec_type():
             """build spec_type string from both checkboxes"""
@@ -1494,7 +1739,17 @@ class LlamaServerGUI:
 
             _spin_safe, _spin_cmd, on_change = _make_spinbox_factory(var, label, lo, hi, handler)
             var.trace_add("write", lambda *_: (_spin_safe(var), on_change(), _spin_cmd(var), self._update_command()))
-            ttk.Spinbox(col, from_=lo, to=hi, textvariable=var, width=7).pack(side="left")
+            spin = ttk.Spinbox(col, from_=lo, to=hi, textvariable=var, width=7)
+            spin.pack(side="left")
+            # Add tooltip based on the variable type
+            if label == "Batch Size":
+                add_tooltip(spin, "batch_size")
+            elif label == "Micro-Batch":
+                add_tooltip(spin, "micro_batch_size")
+            elif label == "Threads":
+                add_tooltip(spin, "threads")
+            elif label == "Thread Batch":
+                add_tooltip(spin, "thread_batch")
 
         # --- Cache Type K and V dropdowns (row 4, two columns) ---
         ct_row = ttk.Frame(frame)
@@ -1509,6 +1764,7 @@ class LlamaServerGUI:
             ttk.Label(col, text=label).pack(side="left")
             cache_menu = ttk.OptionMenu(col, var, var.get(), "f16", "q8_0", "q5_0", "q4_0")
             cache_menu.pack(side="left")
+            add_tooltip(cache_menu, "cache_type_k" if label == "Cache K" else "cache_type_v")
 
         # --- Draft-MTP Cache Type Kd and Vd dropdowns (row 5, hidden by default) ---
         ct_draft_row = ttk.Frame(frame)
@@ -1521,6 +1777,7 @@ class LlamaServerGUI:
             ttk.Label(col, text=label).pack(side="left")
             cache_menu_d = ttk.OptionMenu(col, var, var.get(), "f16", "q8_0", "q5_0", "q4_0")
             cache_menu_d.pack(side="left")
+            add_tooltip(cache_menu_d, "cache_type_kd" if label == "Cache Kd" else "cache_type_vd")
 
         def _on_draft_cache_toggle(*_):
             try:
@@ -1539,12 +1796,13 @@ class LlamaServerGUI:
         # --- Optimise button (row 6, left) ---
         opt_btn_frame = ttk.Frame(frame)
         opt_btn_frame.grid(row=6, column=0, sticky="w", pady=(8, 0))
-        ttk.Button(opt_btn_frame, text="Optimise", command=self._run_optimiser).pack(side="left")
+        opt_btn = ttk.Button(opt_btn_frame, text="Optimise", command=self._run_optimiser)
+        opt_btn.pack(side="left")
+        add_tooltip(opt_btn, "optimise")
 
     def _section_server_settings(self, parent):
         """server settings section, always visible, sensible defaults"""
-        frame = ttk.LabelFrame(parent, text="Network & Server", padding=(8, 6))
-        frame.pack(fill="both", padx=6, pady=4)
+        container, frame = self._make_collapsible_section(parent, "Network & Server", "Network & Server")
 
         # Host and Port row
         net_row = ttk.Frame(frame)
@@ -1563,6 +1821,7 @@ class LlamaServerGUI:
         ttk.Label(host_frame, text="Host:").pack(side="left", padx=(0, 4))
         entry_h = ttk.Entry(host_frame, textvariable=sv_host, width=12)
         entry_h.pack(side="left")
+        add_tooltip(entry_h, "host")
 
         def _on_port_change(*_):
             try:
@@ -1594,6 +1853,7 @@ class LlamaServerGUI:
 
         entry_p = ttk.Spinbox(port_frame, from_=1, to=65535, textvariable=iv_port, width=8)
         entry_p.pack(side="left")
+        add_tooltip(entry_p, "port")
 
         # Cache RAM spinbox
         iv_cache_ram = self._tk["cache_ram"]
@@ -1618,6 +1878,7 @@ class LlamaServerGUI:
 
         entry_c = ttk.Spinbox(cache_frame, from_=0, to=999999, textvariable=iv_cache_ram, width=8)
         entry_c.pack(side="left")
+        add_tooltip(entry_c, "cache_ram")
 
         # Parallel spinbox
         iv_parallel = self._tk["parallel"]
@@ -1642,11 +1903,13 @@ class LlamaServerGUI:
 
         entry_np = ttk.Spinbox(parallel_frame, from_=1, to=128, textvariable=iv_parallel, width=5)
         entry_np.pack(side="left")
+        add_tooltip(entry_np, "parallel")
 
 
     def _section_sampling_params(self, parent):
         """sampling parameters section, always visible, two column grid"""
-        samp_frame = ttk.Frame(parent)
+        container, frame = self._make_collapsible_section(parent, "Sampling Parameters", "Sampling Parameters")
+        samp_frame = ttk.Frame(frame)
         samp_frame.pack(fill="both", padx=6, pady=4)
 
         sv_temp = self._tk["temperature"]
@@ -1671,8 +1934,10 @@ class LlamaServerGUI:
                 pass
         sv_temp.trace_add("write", lambda *_: (_temp_safe(), _temp_cmd()))
         ttk.Label(samp_frame, text="Temperature").grid(row=0, column=0, sticky="w", padx=(4, 0), pady=1)
-        ttk.Spinbox(samp_frame, from_=0.05, to=2.0, increment=0.05, width=8,
-                    textvariable=sv_temp).grid(row=0, column=0, sticky="w", padx=(100, 0), pady=1)
+        temp_spin = ttk.Spinbox(samp_frame, from_=0.05, to=2.0, increment=0.05, width=8,
+                    textvariable=sv_temp)
+        temp_spin.grid(row=0, column=0, sticky="w", padx=(100, 0), pady=1)
+        add_tooltip(temp_spin, "temperature")
 
         # --- Min-P (row 0, col 1) ---
         def _minp_safe(*_):
@@ -1689,8 +1954,10 @@ class LlamaServerGUI:
                 pass
         sv_minp.trace_add("write", lambda *_: (_minp_safe(), _minp_cmd()))
         ttk.Label(samp_frame, text="Min-P").grid(row=0, column=1, sticky="w", padx=(40, 0), pady=1)
-        ttk.Spinbox(samp_frame, from_=-1.0, to=1.0, increment=0.01, width=8,
-                    textvariable=sv_minp).grid(row=0, column=1, sticky="w", padx=(140, 0), pady=1)
+        minp_spin = ttk.Spinbox(samp_frame, from_=-1.0, to=1.0, increment=0.01, width=8,
+                    textvariable=sv_minp)
+        minp_spin.grid(row=0, column=1, sticky="w", padx=(140, 0), pady=1)
+        add_tooltip(minp_spin, "min_p")
 
         # --- Top-K (row 1, col 0) ---
         def _topk_safe(*_):
@@ -1708,8 +1975,10 @@ class LlamaServerGUI:
                 pass
         sv_topk.trace_add("write", lambda *_: (_topk_safe(), _topk_cmd()))
         ttk.Label(samp_frame, text="Top-K").grid(row=1, column=0, sticky="w", padx=(4, 0), pady=1)
-        ttk.Spinbox(samp_frame, from_=1, to=9999, increment=1, width=8,
-                    textvariable=sv_topk).grid(row=1, column=0, sticky="w", padx=(100, 0), pady=1)
+        topk_spin = ttk.Spinbox(samp_frame, from_=1, to=9999, increment=1, width=8,
+                    textvariable=sv_topk)
+        topk_spin.grid(row=1, column=0, sticky="w", padx=(100, 0), pady=1)
+        add_tooltip(topk_spin, "top_k")
 
         # --- Presence Penalty (row 1, col 1) ---
         def _pp_safe(*_):
@@ -1726,8 +1995,10 @@ class LlamaServerGUI:
                 pass
         sv_pp.trace_add("write", lambda *_: (_pp_safe(), _pp_cmd()))
         ttk.Label(samp_frame, text="Presence Pen.").grid(row=1, column=1, sticky="w", padx=(40, 0), pady=1)
-        ttk.Spinbox(samp_frame, from_=-2.0, to=2.0, increment=0.1, width=8,
-                    textvariable=sv_pp).grid(row=1, column=1, sticky="w", padx=(160, 0), pady=1)
+        pp_spin = ttk.Spinbox(samp_frame, from_=-2.0, to=2.0, increment=0.1, width=8,
+                    textvariable=sv_pp)
+        pp_spin.grid(row=1, column=1, sticky="w", padx=(160, 0), pady=1)
+        add_tooltip(pp_spin, "presence_penalty")
 
         # --- Top-P (row 2, col 0) ---
         def _topp_safe(*_):
@@ -1744,8 +2015,10 @@ class LlamaServerGUI:
                 pass
         sv_topp.trace_add("write", lambda *_: (_topp_safe(), _topp_cmd()))
         ttk.Label(samp_frame, text="Top-P").grid(row=2, column=0, sticky="w", padx=(4, 0), pady=1)
-        ttk.Spinbox(samp_frame, from_=0.05, to=1.0, increment=0.05, width=8,
-                    textvariable=sv_topp).grid(row=2, column=0, sticky="w", padx=(100, 0), pady=1)
+        topp_spin = ttk.Spinbox(samp_frame, from_=0.05, to=1.0, increment=0.05, width=8,
+                    textvariable=sv_topp)
+        topp_spin.grid(row=2, column=0, sticky="w", padx=(100, 0), pady=1)
+        add_tooltip(topp_spin, "top_p")
 
         # --- Repeat Penalty (row 2, col 1) ---
         sv_rp = tk.DoubleVar(value=1.1)
@@ -1763,8 +2036,10 @@ class LlamaServerGUI:
                 pass
         sv_rp.trace_add("write", lambda *_: (_rp_safe(), _rp_cmd()))
         ttk.Label(samp_frame, text="Repeat Pen.").grid(row=2, column=1, sticky="w", padx=(40, 0), pady=1)
-        ttk.Spinbox(samp_frame, from_=1.0, to=3.0, increment=0.1, width=8,
-                    textvariable=sv_rp).grid(row=2, column=1, sticky="w", padx=(150, 0), pady=1)
+        rp_spin = ttk.Spinbox(samp_frame, from_=1.0, to=3.0, increment=0.1, width=8,
+                    textvariable=sv_rp)
+        rp_spin.grid(row=2, column=1, sticky="w", padx=(150, 0), pady=1)
+        add_tooltip(rp_spin, "repeat_penalty")
 
 
 # ---------------------------------------------------------------------------
@@ -1775,8 +2050,7 @@ class LlamaServerGUI:
 
     def _section_hardware_info(self, parent):
         """read only hardware info display, cpu, gpu, vram, ram"""
-        frame = ttk.LabelFrame(parent, text="System Hardware", padding=(8, 6))
-        frame.pack(fill="both", padx=6, pady=4)
+        container, frame = self._make_collapsible_section(parent, "System Hardware", "System Hardware")
 
         cores = self._hw.get('CPU_CORES', '')
         threads = self._hw.get('CPU_THREADS', '')
@@ -2635,19 +2909,52 @@ class LlamaServerGUI:
         btn_frame = ttk.Frame(win)
         btn_frame.pack(fill="x", pady=8)
         ttk.Button(btn_frame, text="Apply Settings", command=_apply).pack(side="right", padx=4)
-        ttk.Button(btn_frame, text="Copy Flags", command=_copy).pack(side="right", padx=4)
+        copy_btn = ttk.Button(btn_frame, text="Copy Flags", command=lambda: (self._copy_to_clipboard(recommended_flags), self.show_toast("Flags copied!")))
+        copy_btn.pack(side="right", padx=4)
         ttk.Button(btn_frame, text="Close", command=_close_results_window).pack(side="right")
 
 
 
     def _update_command(self):
-        """rebuild generated command, update display"""
-        cmd = self.config.generate_command()
-        if hasattr(self, 'cmd_text'):
-            self.cmd_text.configure(state='normal')
-            self.cmd_text.delete('1.0', 'end')
-            self.cmd_text.insert('1.0', cmd)
-            self.cmd_text.configure(state='disabled')
+            """rebuild generated command, update display with syntax highlighting"""
+            cmd = self.config.generate_command()
+            if hasattr(self, 'cmd_text'):
+                self.cmd_text.configure(state='normal')
+                self.cmd_text.delete('1.0', 'end')
+            
+                # Syntax highlighting for command flags
+                import re
+            
+                # Configure tags for syntax highlighting
+                self.cmd_text.tag_configure('exe', foreground='#0078d4', font=get_font(FONT_SIZE_NORMAL, FONT_WEIGHT_BOLD, mono=True))
+                self.cmd_text.tag_configure('model', foreground='#27ae60', font=get_font(FONT_SIZE_NORMAL, mono=True))
+                self.cmd_text.tag_configure('long_flag', foreground='#cc3300', font=get_font(FONT_SIZE_NORMAL, FONT_WEIGHT_BOLD, mono=True))
+                self.cmd_text.tag_configure('short_flag', foreground='#cc3300', font=get_font(FONT_SIZE_NORMAL, FONT_WEIGHT_BOLD, mono=True))
+                self.cmd_text.tag_configure('number', foreground='#8e44ad', font=get_font(FONT_SIZE_NORMAL, mono=True))
+                self.cmd_text.tag_configure('string', foreground='#27ae60', font=get_font(FONT_SIZE_NORMAL, mono=True))
+                self.cmd_text.tag_configure('default', foreground='#1a1a1a', font=get_font(FONT_SIZE_NORMAL, mono=True))
+            
+                # Insert with default tag first
+                self.cmd_text.insert('1.0', cmd, 'default')
+            
+                # Apply highlighting using regex on the full text
+                full_text = cmd
+                patterns = [
+                    (r'llama-server\.exe', 'exe'),
+                    (r'-m\s+"[^"]*"', 'model'),
+                    (r'--\w+', 'long_flag'),
+                    (r'(?<!-)-\w+', 'short_flag'),  # negative lookbehind to avoid matching --flags
+                    (r'\b\d+\b', 'number'),
+                    (r'"[^"]*"', 'string'),
+                ]
+            
+                for pattern, tag in patterns:
+                    for match in re.finditer(pattern, full_text):
+                        start = f"1.0+{match.start()}c"
+                        end = f"1.0+{match.end()}c"
+                        self.cmd_text.tag_add(tag, start, end)
+            
+                self.cmd_text.configure(state='disabled')
 
     def _run_optimiser(self):
         """entry point for modular optimisation service"""
@@ -2780,6 +3087,12 @@ class LlamaServerGUI:
         cmd = self.config.generate_command()
         self.root.clipboard_clear()
         self.root.clipboard_append(cmd)
+        self.show_toast("Copied!")
+
+    def _copy_to_clipboard(self, text):
+        """Copy text to clipboard."""
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
 
     def _save_bat_command(self):
         """Prompt user to choose a folder, name the file, and save the command as a .bat file."""
@@ -2864,7 +3177,7 @@ class LlamaServerGUI:
             with open(filepath, "w", encoding="utf-8") as f:
                 f.write(cmd)
             _save_bat_folder(result["folder"])
-            messagebox.showinfo("Saved", f"Saved as:\n{filepath}")
+            self.show_toast(f"Saved as {os.path.basename(filepath)}")
         except Exception as e:
             messagebox.showerror("Error", f"Could not save file:\n{e}")
 
