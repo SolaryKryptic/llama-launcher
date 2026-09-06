@@ -202,20 +202,6 @@ def parse_batch_pair(pair_label):
     return int(b_str), int(ub_str)
 
 
-def is_slow(score, min_score):
-    """True when a score floor is configured and the trial falls below it.
-
-    SLOW trials keep their raw speed as the TPE objective but are excluded
-    from incumbency (like a PPL failure). None/0 floor disables the check.
-    """
-    try:
-        if min_score is None or float(min_score) <= 0:
-            return False
-        return float(score) < float(min_score)
-    except (TypeError, ValueError):
-        return False
-
-
 def needs_quality_check(trial_score, best_score):
     """True only when the trial is strictly faster than the accepted best.
 

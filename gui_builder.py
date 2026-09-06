@@ -7,14 +7,14 @@ from tkinter import filedialog, messagebox, Tk, Toplevel, StringVar
 import tkinter as tk
 from tkinter import ttk
 from hardwarescanner import scan_hardware
-from optimisation_service import AVAILABLE_METHODS, DEFAULT_PERPLEXITY_FILE, OptimisationRequest, OptimisationService, resolve_perplexity_file
+from optimisation_service import METHOD_BAYESIAN, DEFAULT_PERPLEXITY_FILE, OptimisationRequest, OptimisationService, resolve_perplexity_file
 from optimiser_script import BENCH_PORT, kill_port
 from optimiser_script import SEARCH_PRESETS, describe_preset_plan
 import sys as _sys2
 
 # Theme and UI helpers
 from theme import (
-    get_colors, get_font, apply_theme, TOOLTIPS,
+    get_colors, get_font, apply_theme, get_current_dark_mode, TOOLTIPS,
     FONT_FAMILY, FONT_MONO, FONT_SIZE_NORMAL, FONT_SIZE_SMALL,
     FONT_SIZE_TITLE, FONT_SIZE_SECTION, FONT_WEIGHT_BOLD,
     PAD_X, PAD_Y, PAD_SMALL, PAD_MEDIUM, PAD_LARGE,
@@ -108,7 +108,7 @@ class Tooltip:
         self.tip_window = tw = tk.Toplevel(self.widget)
         tw.wm_overrideredirect(True)
         tw.wm_geometry(f"+{x}+{y}")
-        colors = get_colors()  # light theme by default
+        colors = get_colors(get_current_dark_mode())
         label = tk.Label(
             tw, text=self.text, justify="left",
             background=colors["tooltip_bg"], foreground=colors["tooltip_fg"],
@@ -822,6 +822,18 @@ class LlamaServerGUI:
             add_tooltip(self._theme_btn, "dark_mode" if not self._dark_mode else "light_mode")
         # Update command preview syntax highlighting colors
         self._update_command()
+        # Re-apply secondary label colors (theme walk resets tk Labels to fg)
+        try:
+            secondary = get_colors(self._dark_mode)["secondary_fg"]
+            for label in (getattr(self, "mmproj_path_label", None),
+                          getattr(self, "draft_model_label", None)):
+                if label is not None:
+                    try:
+                        label.configure(foreground=secondary)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
     def show_toast(self, message, duration_ms=1000):
         """Show a temporary toast notification near the mouse cursor."""
@@ -1174,6 +1186,19 @@ class LlamaServerGUI:
         # Apply initial theme
         apply_theme(self.root, self._dark_mode)
         colors = get_colors(self._dark_mode)
+
+        # Scrollable canvas area holding the section frames
+        inner_frame = ttk.Frame(outer_frame)
+        inner_frame.grid(row=1, column=0, sticky="nswe")
+        outer_frame.columnconfigure(0, weight=1)
+
+        # Configure the canvas so it resizes when the window changes
+        def _on_canvas_resize(event):
+            if hasattr(self, 'canvas') and event.widget == inner_frame:
+                try: self.canvas.config(width=event.width - 20)
+                except Exception: pass
+
+        inner_frame.bind("<Configure>", _on_canvas_resize)
         self.canvas = tk.Canvas(inner_frame, highlightthickness=0, bg=colors["bg"])
         scrollbar = ttk.Scrollbar(
             inner_frame, orient="vertical", command=self.canvas.yview
@@ -1288,6 +1313,10 @@ class LlamaServerGUI:
         self.cmd_text.configure(yscrollcommand=cmd_scrollbar.set)
 
 
+
+        # Theme pass over the fully built tree: widgets created after the
+        # initial apply_theme call (all sections above) need styling too.
+        apply_theme(self.root, self._dark_mode)
 
         # Render the initial command immediately on startup
         self._update_command()
@@ -1410,7 +1439,8 @@ class LlamaServerGUI:
         mmproj_browse_btn = ttk.Button(self.mmproj_browse_frame, text="Browse mmproj...", command=self._browse_mmproj)
         mmproj_browse_btn.pack(side="left", padx=(0, 4))
         add_tooltip(mmproj_browse_btn, "mmproj_path")
-        self.mmproj_path_label = tk.Label(self.mmproj_browse_frame, text="", anchor="w", justify="left", foreground="#666")
+        self.mmproj_path_label = tk.Label(self.mmproj_browse_frame, text="", anchor="w", justify="left",
+                                            foreground=get_colors(self._dark_mode)["secondary_fg"])
         self.mmproj_path_label.pack(side="left", fill="x", expand=True)
         self._update_mmproj_ui()
 
@@ -1608,7 +1638,8 @@ class LlamaServerGUI:
         draft_browse = ttk.Button(spec_draft_row, text="Browse draft models...", command=self._browse_draft_model)
         draft_browse.pack(side="left", padx=(0, 4))
         add_tooltip(draft_browse, "draft_model_path")
-        self.draft_model_label = tk.Label(spec_draft_row, text="", anchor="w", justify="left", foreground="#666")
+        self.draft_model_label = tk.Label(spec_draft_row, text="", anchor="w", justify="left",
+                                            foreground=get_colors(self._dark_mode)["secondary_fg"])
         self.draft_model_label.pack(side="left", padx=(0, 8))
         ttk.Label(spec_draft_row, text="Max:").pack(side="left")
         spin_max = ttk.Spinbox(spec_draft_row, from_=0, to=64, textvariable=iv_spec_draft_max, width=4)
@@ -2166,9 +2197,6 @@ class LlamaServerGUI:
         result = [None]
 
         config_data = _load_config()
-        saved_method = config_data.get("optimiser_method", "bayesian")
-        if saved_method not in AVAILABLE_METHODS:
-            saved_method = "bayesian"
         saved_weight = config_data.get("optimiser_weight", 0.5)
         saved_ctx = config_data.get("optimiser_context_size", 16384)
         saved_trials = config_data.get("optimiser_trials", 40)
@@ -2176,11 +2204,7 @@ class LlamaServerGUI:
         if saved_preset not in SEARCH_PRESETS:
             saved_preset = "standard"
         saved_avg = config_data.get("optimiser_avg_runs", 1)
-        saved_seed = config_data.get("optimiser_seed", 42)
         saved_verify_picks = config_data.get("optimiser_verify_picks", 2)
-        saved_min_score = config_data.get("optimiser_min_score", 0.0)
-        saved_cooldown = config_data.get("optimiser_cooldown_secs", 5.0)
-        saved_journal = config_data.get("optimiser_journal_path", "")
         saved_resume = config_data.get("optimiser_resume_study", "")
         saved_retry_crashed = bool(config_data.get("optimiser_retry_crashed", False))
         saved_ppl_threshold = config_data.get("optimiser_ppl_threshold_percent", self.config.ppl_threshold_percent)
@@ -2200,6 +2224,7 @@ class LlamaServerGUI:
         dlg.transient(self.root)
         dlg.grab_set()
         dlg.resizable(True, True)
+        apply_theme(dlg, self._dark_mode)
 
         closed = [False]
 
@@ -2233,7 +2258,7 @@ class LlamaServerGUI:
         ttk.Label(dlg, text="Optimiser Settings", font=("Segoe UI", 11, "bold")).pack(pady=(12, 6))
 
         cpu_only_var = tk.BooleanVar(value=saved_cpu_only)
-        tk.Checkbutton(dlg, text="CPU-only optimisation (forces -ngl 0 for all optimisation commands)", variable=cpu_only_var).pack(anchor="w", padx=20, pady=(0, 8))
+        ttk.Checkbutton(dlg, text="CPU-only optimisation (forces -ngl 0 for all optimisation commands)", variable=cpu_only_var).pack(anchor="w", padx=20, pady=(0, 8))
 
         def _spin_row(label, var, from_, to, increment, width=8, fmt=None):
             row = ttk.Frame(dlg)
@@ -2269,12 +2294,6 @@ class LlamaServerGUI:
                 except Exception:
                     pass
 
-        method_var = tk.StringVar(value=saved_method)
-        row_method = ttk.Frame(dlg)
-        row_method.pack(fill="x", padx=20, pady=4)
-        ttk.Label(row_method, text="Method:", width=34).pack(anchor="w")
-        ttk.Combobox(row_method, textvariable=method_var, values=AVAILABLE_METHODS, state="readonly", width=22).pack(anchor="w", pady=2)
-
         weight_var = tk.DoubleVar(value=saved_weight)
         _spin_row("Score Weight: (Value closer to 0 puts more weight on TG, closer to 1 puts more weight on PP)\nRecommend setting weighting to lower end (0.2-0.4) by default due to PP \nusually being x times larger than TG:", weight_var, 0.0, 1.0, 0.05, fmt="%.2f")
 
@@ -2288,26 +2307,26 @@ class LlamaServerGUI:
         row_preset = ttk.Frame(dlg)
         row_preset.pack(fill="x", padx=20, pady=4)
         ttk.Label(row_preset, text="Preset:").pack(anchor="w")
+        _preset_labels = {v["label"]: k for k, v in SEARCH_PRESETS.items()}
         preset_combo = ttk.Combobox(
             row_preset, textvariable=preset_var,
-            values=[f"{k} — {v['label']}" for k, v in SEARCH_PRESETS.items()],
+            values=[v["label"] for v in SEARCH_PRESETS.values()],
             state="readonly", width=24)
         preset_combo.pack(anchor="w", pady=2)
         try:
-            preset_combo.set(f"{saved_preset} — {SEARCH_PRESETS[saved_preset]['label']}")
+            preset_combo.set(SEARCH_PRESETS[saved_preset]["label"])
         except Exception:
             pass
         plan_var = tk.StringVar(value="")
-        ttk.Label(row_preset, textvariable=plan_var, foreground="gray").pack(anchor="w")
+        ttk.Label(row_preset, textvariable=plan_var, style="Secondary.TLabel").pack(anchor="w")
 
         _refreshing_plan = [False]
 
         def _preset_key():
             try:
-                key = preset_var.get().split(" — ")[0].strip().lower()
+                return _preset_labels.get(preset_var.get(), "standard")
             except Exception:
                 return "standard"
-            return key if key in SEARCH_PRESETS else "standard"
 
         def _refresh_plan(*_):
             if _refreshing_plan[0]:
@@ -2335,44 +2354,41 @@ class LlamaServerGUI:
         avg_var = tk.IntVar(value=saved_avg)
         _spin_row("Runs per Trial (recommended 1):", avg_var, 1, 10, 1, width=8)
 
-        seed_var = tk.IntVar(value=saved_seed)
-        _spin_row("Seed (keep the same between optimisation runs for reproducibility):", seed_var, 0, 2147483647, 1, width=10)
-
         verify_var = tk.IntVar(value=saved_verify_picks)
         _spin_row("Verify winner (extra benchmark runs, 0 disables):", verify_var, 0, 10, 1, width=8)
 
-        min_score_var = tk.DoubleVar(value=saved_min_score)
-        _spin_row("Minimum score floor (trials below are kept but never picked, 0 disables):", min_score_var, 0.0, 100000.0, 1.0, fmt="%.1f")
-
-        cooldown_var = tk.DoubleVar(value=saved_cooldown)
-        _spin_row("Cooldown between benchmark runs in seconds (thermal settle):", cooldown_var, 0.0, 120.0, 1.0, fmt="%.1f")
-
         ttk.Label(dlg, text="Crash-safe resume (Optuna journal)", font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=20, pady=(8, 0))
-        journal_var = tk.StringVar(value=saved_journal)
-        _path_picker_row("Journal File (blank = in-memory, no resume):", journal_var)
+        try:
+            from optimisation_service import get_exe_dir as _get_exe_dir
+            _journal_auto = os.path.join(_get_exe_dir(), "optuna_journal.log")
+        except Exception:
+            _journal_auto = os.path.join(os.path.dirname(os.path.abspath(__file__)), "optuna_journal.log")
+        ttk.Label(dlg, text=f"Journal: {_journal_auto}", style="Secondary.TLabel").pack(anchor="w", padx=20)
         resume_var = tk.BooleanVar(value=bool(saved_resume))
-        tk.Checkbutton(dlg, text="Resume prior study from journal", variable=resume_var).pack(anchor="w", padx=20)
+        ttk.Checkbutton(dlg, text="Resume prior study from journal", variable=resume_var).pack(anchor="w", padx=20)
         study_var = tk.StringVar(value=saved_resume)
         row_study = ttk.Frame(dlg)
-        row_study.pack(fill="x", padx=20, pady=3)
         ttk.Label(row_study, text="Study:").pack(side="left")
         study_combo = ttk.Combobox(row_study, textvariable=study_var, width=40, state="readonly")
         study_combo.pack(side="left", fill="x", expand=True, padx=(8, 0))
         retry_var = tk.BooleanVar(value=saved_retry_crashed)
-        tk.Checkbutton(dlg, text="Retry crashed (interrupted) trials as new trials", variable=retry_var).pack(anchor="w", padx=20)
+        ttk.Checkbutton(dlg, text="Retry crashed (interrupted) trials as new trials", variable=retry_var).pack(anchor="w", padx=20)
+
+        def _update_study_visibility(*_):
+            if resume_var.get():
+                row_study.pack(fill="x", padx=20, pady=3)
+            else:
+                row_study.pack_forget()
+
+        resume_var.trace_add("write", _update_study_visibility)
 
         def _refresh_studies(*_):
             names = []
-            jp = journal_var.get().strip()
-            if jp:
-                try:
-                    from bayesian import list_studies_for_model
-                    if not os.path.isabs(jp):
-                        from optimisation_service import get_exe_dir
-                        jp = os.path.join(get_exe_dir(), jp)
-                    names = list_studies_for_model(jp, self.config.model_path)
-                except Exception:
-                    names = []
+            try:
+                from bayesian import list_studies_for_model
+                names = list_studies_for_model(_journal_auto, self.config.model_path)
+            except Exception:
+                names = []
             try:
                 study_combo.config(values=names)
                 if study_var.get() not in names:
@@ -2380,8 +2396,8 @@ class LlamaServerGUI:
             except Exception:
                 pass
 
-        journal_var.trace_add("write", _refresh_studies)
         _refresh_studies()
+        _update_study_visibility()
 
         ppl_var = tk.DoubleVar(value=saved_ppl_threshold)
         _spin_row("PPL Threshold (% degradation allowed):", ppl_var, 1.0, 10.0, 0.5, width=8, fmt="%.1f")
@@ -2390,7 +2406,7 @@ class LlamaServerGUI:
         _path_picker_row("Corpus File:", perplexity_file_var)
 
         lock_cache_var = tk.BooleanVar(value=saved_lock_cache_quant)
-        tk.Checkbutton(dlg, text="Lock KV cache quantization to selected values", variable=lock_cache_var).pack(anchor="w", padx=20, pady=(0, 4))
+        ttk.Checkbutton(dlg, text="Lock KV cache quantization to selected values", variable=lock_cache_var).pack(anchor="w", padx=20, pady=(0, 4))
 
         bottom_frame = ttk.Frame(dlg)
         bottom_frame.pack(fill="x", padx=20)
@@ -2419,18 +2435,16 @@ class LlamaServerGUI:
 
         def _get_optimiser_settings_payload():
             return {
-                "method": method_var.get(),
+                "method": METHOD_BAYESIAN,
                 "metric_weight": weight_var.get(),
                 "context_size": ctx_var.get(),
                 "trials": trials_var.get(),
                 "preset": _get_preset_key(),
                 "avg_runs": avg_var.get(),
-                "seed": seed_var.get(),
+                "seed": 42,
                 "verify_picks": verify_var.get(),
-                "min_score": (None if float(min_score_var.get()) <= 0
-                              else float(min_score_var.get())),
-                "cooldown_secs": float(cooldown_var.get()),
-                "journal_path": journal_var.get().strip(),
+                "cooldown_secs": 5.0,
+                "journal_path": _journal_auto,
                 "resume_study": (study_var.get().strip()
                                  if resume_var.get() and study_var.get().strip()
                                  else ""),
@@ -2454,10 +2468,7 @@ class LlamaServerGUI:
                     "optimiser_trials": payload["trials"],
                     "optimiser_preset": payload["preset"],
                     "optimiser_avg_runs": payload["avg_runs"],
-                    "optimiser_seed": payload["seed"],
                     "optimiser_verify_picks": payload["verify_picks"],
-                    "optimiser_min_score": payload["min_score"] or 0.0,
-                    "optimiser_cooldown_secs": payload["cooldown_secs"],
                     "optimiser_journal_path": payload["journal_path"],
                     "optimiser_resume_study": payload["resume_study"],
                     "optimiser_retry_crashed": payload["retry_crashed"],
@@ -2509,6 +2520,7 @@ class LlamaServerGUI:
         win.title("Optimisation in Progress")
         win.transient(self.root)
         win.grab_set()
+        apply_theme(win, self._dark_mode)
 
         closed = [False]
         worker_done = [False]
@@ -2543,7 +2555,7 @@ class LlamaServerGUI:
         label_var     = tk.StringVar(value="Preparing...")
         remaining_var = tk.StringVar(value="Calculating...")
         ttk.Label(win, textvariable=label_var).pack()
-        ttk.Label(win, textvariable=remaining_var, foreground="gray").pack()
+        ttk.Label(win, textvariable=remaining_var, style="Secondary.TLabel").pack()
 
         progress_var = tk.DoubleVar(value=0.0)
         bar = ttk.Progressbar(win, variable=progress_var, maximum=100, mode="determinate")
@@ -2639,6 +2651,7 @@ class LlamaServerGUI:
         win = Toplevel(self.root)
         win.title("Optimisation Results")
         win.transient(self.root)
+        apply_theme(win, self._dark_mode)
         self._restore_window_geometry(win, "window_geometry_optimisation_results", 580, 440)
 
         def _close_results_window():
@@ -2922,17 +2935,33 @@ class LlamaServerGUI:
                 self.cmd_text.configure(state='normal')
                 self.cmd_text.delete('1.0', 'end')
             
-                # Syntax highlighting for command flags
+                # Syntax highlighting for command flags (theme-aware)
                 import re
-            
+
+                _hl = get_colors(self._dark_mode)
+                if self._dark_mode:
+                    _tag_colors = {
+                        'exe': _hl["accent"], 'model': _hl["success"],
+                        'long_flag': "#ff8a6b", 'short_flag': "#ff8a6b",
+                        'number': "#c792ea", 'string': _hl["success"],
+                        'default': _hl["fg"],
+                    }
+                else:
+                    _tag_colors = {
+                        'exe': '#0078d4', 'model': '#27ae60',
+                        'long_flag': '#cc3300', 'short_flag': '#cc3300',
+                        'number': '#8e44ad', 'string': '#27ae60',
+                        'default': '#1a1a1a',
+                    }
+
                 # Configure tags for syntax highlighting
-                self.cmd_text.tag_configure('exe', foreground='#0078d4', font=get_font(FONT_SIZE_NORMAL, FONT_WEIGHT_BOLD, mono=True))
-                self.cmd_text.tag_configure('model', foreground='#27ae60', font=get_font(FONT_SIZE_NORMAL, mono=True))
-                self.cmd_text.tag_configure('long_flag', foreground='#cc3300', font=get_font(FONT_SIZE_NORMAL, FONT_WEIGHT_BOLD, mono=True))
-                self.cmd_text.tag_configure('short_flag', foreground='#cc3300', font=get_font(FONT_SIZE_NORMAL, FONT_WEIGHT_BOLD, mono=True))
-                self.cmd_text.tag_configure('number', foreground='#8e44ad', font=get_font(FONT_SIZE_NORMAL, mono=True))
-                self.cmd_text.tag_configure('string', foreground='#27ae60', font=get_font(FONT_SIZE_NORMAL, mono=True))
-                self.cmd_text.tag_configure('default', foreground='#1a1a1a', font=get_font(FONT_SIZE_NORMAL, mono=True))
+                self.cmd_text.tag_configure('exe', foreground=_tag_colors['exe'], font=get_font(FONT_SIZE_NORMAL, FONT_WEIGHT_BOLD, mono=True))
+                self.cmd_text.tag_configure('model', foreground=_tag_colors['model'], font=get_font(FONT_SIZE_NORMAL, mono=True))
+                self.cmd_text.tag_configure('long_flag', foreground=_tag_colors['long_flag'], font=get_font(FONT_SIZE_NORMAL, FONT_WEIGHT_BOLD, mono=True))
+                self.cmd_text.tag_configure('short_flag', foreground=_tag_colors['short_flag'], font=get_font(FONT_SIZE_NORMAL, FONT_WEIGHT_BOLD, mono=True))
+                self.cmd_text.tag_configure('number', foreground=_tag_colors['number'], font=get_font(FONT_SIZE_NORMAL, mono=True))
+                self.cmd_text.tag_configure('string', foreground=_tag_colors['string'], font=get_font(FONT_SIZE_NORMAL, mono=True))
+                self.cmd_text.tag_configure('default', foreground=_tag_colors['default'], font=get_font(FONT_SIZE_NORMAL, mono=True))
             
                 # Insert with default tag first
                 self.cmd_text.insert('1.0', cmd, 'default')
@@ -2974,6 +3003,7 @@ class LlamaServerGUI:
         dlg.transient(self.root)
         dlg.grab_set()
         dlg.resizable(False, False)
+        apply_theme(dlg, self._dark_mode)
         # Restore last geometry or center default
         self._restore_window_geometry(dlg, "window_geometry_optimise_system", 420, 160)
 
@@ -3054,8 +3084,7 @@ class LlamaServerGUI:
             avg_runs=cfg["avg_runs"],
             seed=cfg["seed"],
             verify_picks=cfg.get("verify_picks", 2),
-            min_score=cfg.get("min_score"),
-            cooldown_secs=float(cfg.get("cooldown_secs", 5.0)),
+            cooldown_secs=5.0,
             journal_path=(cfg.get("journal_path") or None),
             resume_study=(cfg.get("resume_study") or None),
             retry_crashed=bool(cfg.get("retry_crashed", False)),
@@ -3107,6 +3136,7 @@ class LlamaServerGUI:
         dialog.title("Save as .bat")
         dialog.transient(self.root)
         dialog.grab_set()
+        apply_theme(dialog, self._dark_mode)
 
         # Center the dialog over the main window
         dialog.update_idletasks()

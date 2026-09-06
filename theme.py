@@ -3,6 +3,8 @@ Theme constants for llama-launcher UI.
 Centralizes fonts, colors, padding, and styling for easy theming.
 """
 
+from tkinter import ttk
+
 # Fonts
 FONT_FAMILY = "Segoe UI"
 FONT_MONO = "Consolas"
@@ -184,73 +186,207 @@ def get_font(size=FONT_SIZE_NORMAL, weight=FONT_WEIGHT_NORMAL, mono=False):
 
 
 # --- Theme application ---
+# Tracks the active mode process-wide so floating windows created outside the
+# main widget tree (tooltips) can pick matching colors.
+_current_dark_mode = False
+
+
+def set_current_dark_mode(dark_mode):
+    global _current_dark_mode
+    _current_dark_mode = bool(dark_mode)
+
+
+def get_current_dark_mode():
+    return _current_dark_mode
+
+
 def apply_theme(root, dark_mode=False):
-    """Apply theme colors to all ttk styles and tk widgets in the widget tree."""
+    """Apply theme colors to ttk styles, option database, and widget tree."""
+    set_current_dark_mode(dark_mode)
     colors = get_colors(dark_mode)
     style = ttk.Style(root)
-    
-    # Configure ttk styles
-    style.configure(".", background=colors["bg"], foreground=colors["fg"])
-    style.configure("TFrame", background=colors["bg"])
-    style.configure("TLabel", background=colors["bg"], foreground=colors["fg"])
-    style.configure("TButton", background=colors["bg"], foreground=colors["fg"])
-    style.configure("TEntry", fieldbackground=colors["bg"], foreground=colors["fg"])
-    style.configure("TSpinbox", fieldbackground=colors["bg"], foreground=colors["fg"])
-    style.configure("TCombobox", fieldbackground=colors["bg"], foreground=colors["fg"])
-    style.configure("TLabelframe", background=colors["bg"], foreground=colors["fg"])
-    style.configure("TLabelframe.Label", background=colors["bg"], foreground=colors["fg"])
-    style.configure("TScrollbar", background=colors["bg"], troughcolor=colors["border"])
-    style.configure("TCheckbutton", background=colors["bg"], foreground=colors["fg"])
-    style.configure("TRadiobutton", background=colors["bg"], foreground=colors["fg"])
-    style.configure("TProgressbar", background=colors["accent"], troughcolor=colors["border"])
-    
-    # Map states for buttons
+
+    # The Windows native themes (vista/xpnative) ignore most color settings,
+    # which is why inputs stayed white and text looked washed out. Clam
+    # respects field/background/foreground settings on every widget.
+    try:
+        style.theme_use("clam")
+    except Exception:
+        pass
+
+    bg, fg = colors["bg"], colors["fg"]
+    border, accent = colors["border"], colors["accent"]
+    dis_bg, dis_fg = colors["disabled_bg"], colors["disabled_fg"]
+
+    # Base + containers
+    style.configure(".", background=bg, foreground=fg,
+                    troughcolor=border, bordercolor=border,
+                    lightcolor=border, darkcolor=border,
+                    insertcolor=fg, selectbackground=accent,
+                    selectforeground=fg, arrowcolor=fg)
+    style.configure("TFrame", background=bg)
+    style.configure("TLabel", background=bg, foreground=fg)
+    style.configure("Secondary.TLabel", background=bg,
+                    foreground=colors["secondary_fg"])
+    style.configure("TLabelframe", background=bg, foreground=fg,
+                    bordercolor=border, lightcolor=border, darkcolor=border)
+    style.configure("TLabelframe.Label", background=bg, foreground=fg)
+    # Buttons
+    style.configure("TButton", background=bg, foreground=fg,
+                    bordercolor=border, lightcolor=border, darkcolor=border,
+                    arrowcolor=fg)
+    style.configure("TCheckbutton", background=bg, foreground=fg,
+                    indicatorcolor=fg)
+    style.configure("TRadiobutton", background=bg, foreground=fg,
+                    indicatorcolor=fg)
+    # Text inputs: fieldbackground is what actually paints the white box dark
+    for widget in ("TEntry", "TSpinbox", "TCombobox", "TCombobox.*"):
+        style.configure(widget, fieldbackground=bg, background=bg,
+                        foreground=fg, insertcolor=fg, arrowcolor=fg,
+                        bordercolor=border, lightcolor=border,
+                        darkcolor=border, selectbackground=accent,
+                        selectforeground=fg)
+    style.configure("TScrollbar", background=bg, troughcolor=border,
+                    bordercolor=border, arrowcolor=fg)
+    style.configure("TProgressbar", background=accent, troughcolor=border,
+                    bordercolor=border)
+    style.configure("TSeparator", background=border)
+    style.configure("TMenubutton", background=bg, foreground=fg,
+                    arrowcolor=fg)
+
+    # State maps so text never renders faded/unreadable
     style.map("TButton",
-        background=[("active", colors["accent_hover"]), ("disabled", colors["disabled_bg"])],
-        foreground=[("disabled", colors["disabled_fg"])]
+        background=[("active", colors["accent_hover"]), ("disabled", dis_bg)],
+        foreground=[("disabled", dis_fg), ("active", fg)],
+        lightcolor=[("active", colors["accent_hover"])],
     )
-    style.map("TEntry",
-        fieldbackground=[("disabled", colors["disabled_bg"])],
-        foreground=[("disabled", colors["disabled_fg"])]
-    )
-    style.map("TSpinbox",
-        fieldbackground=[("disabled", colors["disabled_bg"])],
-        foreground=[("disabled", colors["disabled_fg"])]
-    )
-    style.map("TCombobox",
-        fieldbackground=[("disabled", colors["disabled_bg"])],
-        foreground=[("disabled", colors["disabled_fg"])]
-    )
+    style.map("TLabel", foreground=[("disabled", dis_fg)])
+    style.map("Secondary.TLabel",
+              foreground=[("disabled", dis_fg)],
+              background=[("active", bg)])
     style.map("TCheckbutton",
-        background=[("active", colors["accent_hover"])],
-        foreground=[("disabled", colors["disabled_fg"])]
+        background=[("active", bg)],
+        foreground=[("disabled", dis_fg)],
+        indicatorcolor=[("disabled", dis_fg)],
     )
-    
-    # Recursively apply to all tk widgets
+    style.map("TRadiobutton",
+        background=[("active", bg)],
+        foreground=[("disabled", dis_fg)],
+    )
+    for widget in ("TEntry", "TSpinbox", "TCombobox"):
+        style.map(widget,
+            fieldbackground=[("disabled", dis_bg), ("readonly", bg)],
+            foreground=[("disabled", dis_fg)],
+        )
+
+    # Option database: covers popdowns and classic tk widgets, including
+    # windows created AFTER this call (dialogs, combobox listboxes, menus).
+    # widgetDefault priority never overrides explicit per-widget settings.
+    try:
+        root.option_add("*TCombobox*Listbox.background", bg, "widgetDefault")
+        root.option_add("*TCombobox*Listbox.foreground", fg, "widgetDefault")
+        root.option_add("*TCombobox*Listbox.selectBackground", accent, "widgetDefault")
+        root.option_add("*TCombobox*Listbox.selectForeground", fg, "widgetDefault")
+        root.option_add("*Menu.background", bg, "widgetDefault")
+        root.option_add("*Menu.foreground", fg, "widgetDefault")
+        root.option_add("*Menu.activeBackground", accent, "widgetDefault")
+        root.option_add("*Menu.activeForeground", fg, "widgetDefault")
+        root.option_add("*Menu.disabledForeground", dis_fg, "widgetDefault")
+        root.option_add("*Text.background", bg, "widgetDefault")
+        root.option_add("*Text.foreground", fg, "widgetDefault")
+        root.option_add("*Text.disabledBackground", dis_bg, "widgetDefault")
+        root.option_add("*Text.disabledForeground", dis_fg, "widgetDefault")
+        root.option_add("*Entry.background", bg, "widgetDefault")
+        root.option_add("*Entry.foreground", fg, "widgetDefault")
+        root.option_add("*Frame.background", bg, "widgetDefault")
+        root.option_add("*Label.background", bg, "widgetDefault")
+        root.option_add("*Label.foreground", fg, "widgetDefault")
+        root.option_add("*Button.background", bg, "widgetDefault")
+        root.option_add("*Button.foreground", fg, "widgetDefault")
+        root.option_add("*Checkbutton.background", bg, "widgetDefault")
+        root.option_add("*Checkbutton.foreground", fg, "widgetDefault")
+        root.option_add("*Toplevel.background", bg, "widgetDefault")
+    except Exception:
+        pass
+
+    # Recursively apply to all existing tk widgets
     def _apply_to_widget(widget):
         try:
             wclass = widget.winfo_class()
-            if wclass in ("Frame", "Labelframe", "Toplevel"):
-                widget.configure(background=colors["bg"])
+            if wclass in ("Frame", "Labelframe", "Toplevel", "Tk"):
+                widget.configure(background=bg)
             elif wclass in ("Label", "Button", "Checkbutton", "Radiobutton"):
-                widget.configure(background=colors["bg"], foreground=colors["fg"])
-            elif wclass in ("Entry", "Spinbox", "Text"):
-                widget.configure(background=colors["bg"], foreground=colors["fg"],
-                               insertbackground=colors["fg"],
-                               selectbackground=colors["accent"],
-                               selectforeground=colors["fg"])
+                widget.configure(background=bg, foreground=fg,
+                                 disabledforeground=dis_fg)
+                if wclass in ("Checkbutton", "Radiobutton"):
+                    try:
+                        widget.configure(selectcolor=bg,
+                                         activebackground=bg,
+                                         activeforeground=fg)
+                    except Exception:
+                        pass
+            elif wclass in ("Entry", "Spinbox", "Listbox"):
+                widget.configure(background=bg, foreground=fg,
+                                 insertbackground=fg,
+                                 selectbackground=accent,
+                                 selectforeground=fg,
+                                 disabledbackground=dis_bg,
+                                 disabledforeground=dis_fg,
+                                 highlightthickness=1,
+                                 highlightbackground=border,
+                                 highlightcolor=accent)
+            elif wclass == "Text":
+                # Note: Text has no disabledbackground/disabledforeground
+                # options; keep them out or the whole configure call fails.
+                widget.configure(background=bg, foreground=fg,
+                                 insertbackground=fg,
+                                 selectbackground=accent,
+                                 selectforeground=fg,
+                                 highlightthickness=1,
+                                 highlightbackground=border,
+                                 highlightcolor=accent)
             elif wclass == "Canvas":
-                widget.configure(background=colors["bg"])
+                widget.configure(background=bg,
+                                 highlightthickness=0)
             elif wclass == "Scrollbar":
-                widget.configure(background=colors["bg"], troughcolor=colors["border"])
+                widget.configure(background=bg, troughcolor=border)
+            elif wclass == "Menu":
+                widget.configure(background=bg, foreground=fg,
+                                 activebackground=accent,
+                                 activeforeground=fg,
+                                 disabledforeground=dis_fg)
         except Exception:
             pass
-        for child in widget.winfo_children():
+        try:
+            children = widget.winfo_children()
+        except Exception:
+            return
+        # Canvas-embedded windows (e.g. the scrollable content frame) are
+        # NOT returned by winfo_children, so descend into them explicitly.
+        if wclass == "Canvas":
+            try:
+                for item in widget.find_all():
+                    try:
+                        win = widget.itemcget(item, "window")
+                    except Exception:
+                        continue
+                    if win:
+                        try:
+                            children = list(children) + [
+                                widget.nametowidget(win)]
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+        for child in children:
             _apply_to_widget(child)
-    
+
     _apply_to_widget(root)
-    
+
     # Force update
-    root.update_idletasks()
-    
+    try:
+        root.update_idletasks()
+    except Exception:
+        pass
+
     return colors

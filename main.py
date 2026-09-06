@@ -6,6 +6,12 @@ from gui_builder import LlamaServerGUI
 from optimisation_service import ensure_default_perplexity_file
 
 root = tk.Tk()
+# Hide the window until the UI is fully built and geometry is applied, so the
+# user never sees the intermediate sizes/positions during startup layout.
+try:
+    root.withdraw()
+except Exception:
+    pass
 default_corpus_path = ensure_default_perplexity_file()
 gui = LlamaServerGUI(root, default_perplexity_file=default_corpus_path)
 
@@ -42,5 +48,15 @@ except Exception:
 
 # ADDED: Automatically launch the silent background update check 1 second after startup
 root.after(1000, lambda: updater.check_for_updates(root))
+
+# Let the layout fully settle while still hidden, then show once.
+try:
+    root.update_idletasks()
+except Exception:
+    pass
+try:
+    root.deiconify()
+except Exception:
+    pass
 
 root.mainloop()

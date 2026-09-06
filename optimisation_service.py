@@ -68,7 +68,6 @@ class OptimisationRequest:
     avg_runs: int = 1
     seed: int = 42
     verify_picks: int = 2
-    min_score: Optional[float] = None
     cooldown_secs: float = 5.0
     preset: str = "standard"
     journal_path: Optional[str] = None
@@ -122,7 +121,6 @@ class OptimisationService:
             time_budget=request.time_budget,
             trial_csv_path=request.trial_csv_path,
             verify_picks=request.verify_picks,
-            min_score=request.min_score,
             cooldown_secs=request.cooldown_secs,
             search_preset=request.preset,
             journal_path=request.journal_path,

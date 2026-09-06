@@ -209,7 +209,7 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
                               perplexity_exe=None, perplexity_file=opt.PERPLEXITY_FILE,
                               ppl_threshold=opt.PPL_THRESHOLD,
                               lock_cache_quant=False, cache_k_locked=None, cache_v_locked=None,
-                              verify_picks=2, min_score=None, cooldown_secs=5.0,
+                              verify_picks=2, cooldown_secs=5.0,
                               search_preset="standard", journal_path=None,
                               resume_study=None, retry_crashed=False):
     """Run an Optuna (TPE) search over the same parameter families used by
@@ -684,15 +684,6 @@ def run_bayesian_optimisation(model_path, server_exe, context_size=16384,
         trial.set_user_attr("temp_c", rep_stats.get("temp_c"))
         trial.set_user_attr("ppl_validated", False)
 
-        # SLOW floor (when configured): below-floor trials keep their raw
-        # speed as the TPE objective but are excluded from incumbency, so no
-        # PPL run is spent on a configuration that could never be picked.
-        if opt.is_slow(score, min_score):
-            trial.set_user_attr("discarded_by", "SLOW")
-            trial.set_user_attr("ppl_skipped_reason", "below_score_floor")
-            report_progress(score)
-            return score
-
         # Per-trial incumbency gate: only a strictly faster trial can replace
         # the accepted best, and only if it passes the PPL quality gate (or its
         # cache matches the baseline so no PPL is needed). The returned
@@ -941,7 +932,6 @@ def main():
     parser.add_argument("--draft", default=None, help="Path to separate draft model GGUF for speculative decoding")
     parser.add_argument("--seed", type=int, default=42, help="Optuna sampler seed")
     parser.add_argument("--verify-picks", type=int, default=2, help="Extra benchmark runs to verify the winning config (0 disables)")
-    parser.add_argument("--min-score", type=float, default=None, help="Score floor: trials below are kept but never picked (default: disabled)")
     parser.add_argument("--cooldown-secs", type=float, default=5.0, help="Settle delay between benchmark runs in seconds (default: 5)")
     parser.add_argument("--preset", default="standard", help="Search preset: quick (~27 trials, narrowed space), standard (~50), thorough (~100)")
     parser.add_argument("--journal", default=None, help="Optuna journal file for crash-safe resume (default: none, in-memory only)")
@@ -966,7 +956,7 @@ def main():
         metric_weight=0.5, n_trials=args.trials, avg_runs=args.avg,
         progress_callback=_print_progress, mtp=args.mtp, draft_model_path=args.draft,
         seed=args.seed, time_budget=args.time_budget, trial_csv_path=args.trial_csv,
-        verify_picks=args.verify_picks, min_score=args.min_score,
+        verify_picks=args.verify_picks,
         cooldown_secs=args.cooldown_secs, search_preset=args.preset,
         journal_path=args.journal, resume_study=args.resume,
         retry_crashed=args.retry_crashed,
