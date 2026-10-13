@@ -448,7 +448,7 @@ class LlamaServerGUI:
         iv_thread_batch = tk.IntVar(value=-1)
 
         # Cache type K and V dropdowns
-        CACHE_TYPES = ["f16", "f32", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"]
+        CACHE_TYPES = ["f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"]
         sv_cache_k = tk.StringVar(value="f16")
         sv_cache_v = tk.StringVar(value="f16")
         sv_cache_kd = tk.StringVar(value="f16")
@@ -1244,20 +1244,32 @@ class LlamaServerGUI:
         self.canvas.pack(side="left", fill="both", expand=True, pady=(0, 4))
         scrollbar.pack(side="right", fill="y")
 
-        # Bind mouse wheel to canvas scrolling
-        def _on_mousewheel(event):
-            # Only scroll canvas if there's more to show; otherwise let child widgets handle it
-            bbox = self.canvas.bbox("all")
-            if not bbox:
-                pass
-            can_scroll_up   = self.canvas.yview()[0] > 0
-            can_scroll_down = self.canvas.yview()[1] < 1
-            if (event.delta > 0 and can_scroll_up) or (event.delta <= 0 and can_scroll_down):
-                direction = -1 if event.delta > 0 else 1
-                self.canvas.yview_scroll(int(1.5 * abs(direction)), "units" if direction < 0 else "pages")
-                return "break"
+        # Bind mouse wheel to canvas scrolling. Input widgets (spinboxes,
+        # comboboxes, text boxes) handle the wheel themselves - hijacking it
+        # there fights the input and makes the page jump unpredictably, so
+        # only scroll the page when the pointer is over a non-input widget.
+        self.canvas.configure(yscrollincrement=1)  # 1 unit == 1 pixel
+        _wheel_input_widgets = (
+            ttk.Spinbox, ttk.Combobox, ttk.Entry, ttk.Scale,
+            tk.Spinbox, tk.Scale, tk.Entry, tk.Text, tk.Listbox,
+            ttk.Treeview,
+        )
 
-        root.bind_all("<MouseWheel>", lambda e: _on_mousewheel(e))
+        def _on_mousewheel(event):
+            if isinstance(event.widget, _wheel_input_widgets):
+                return  # let the widget under the pointer consume the wheel
+            delta = getattr(event, "delta", 0)
+            if not delta:
+                return
+            # One notch is 120 on Windows. Keep up/down symmetric and scale
+            # smoothly for high-resolution wheels and touchpads.
+            px = int(delta / 120 * 60)
+            if px == 0:
+                px = 1 if delta > 0 else -1
+            self.canvas.yview_scroll(-px, "units")
+            return "break"
+
+        root.bind_all("<MouseWheel>", _on_mousewheel)
 
         # Build each section into the scrollable frame in order
         self._section_hardware_info(self.scrollable)
@@ -1759,7 +1771,7 @@ class LlamaServerGUI:
         sv_cache_k = self._tk["cache_type_k"]
         sv_cache_v = self._tk["cache_type_v"]
 
-        CACHE_TYPES = ["f16", "f32", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"]
+        CACHE_TYPES = ["f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"]
 
         for var, label in [(sv_cache_k, "Cache K"), (sv_cache_v, "Cache V")]:
             col = ttk.Frame(ct_row)
@@ -2386,7 +2398,7 @@ class LlamaServerGUI:
         bottom_frame.pack(fill="x", padx=20)
 
         cache_lock_frame = ttk.Frame(bottom_frame)
-        CACHE_TYPES = ["f16", "f32", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"]
+        CACHE_TYPES = ["f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"]
         if str(saved_lock_cache_k) not in CACHE_TYPES:
             saved_lock_cache_k = self.config.cache_type_k
         if str(saved_lock_cache_v) not in CACHE_TYPES:

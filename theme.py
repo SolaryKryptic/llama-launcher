@@ -85,7 +85,7 @@ SECTION_TITLES = [
 ]
 
 # Cache type options
-CACHE_TYPES = ["f16", "f32", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"]
+CACHE_TYPES = ["f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"]
 
 # Speculative decoding types
 SPEC_TYPES = ["ngram-mod", "draft-mtp"]
