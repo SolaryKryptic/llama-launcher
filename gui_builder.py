@@ -1759,11 +1759,13 @@ class LlamaServerGUI:
         sv_cache_k = self._tk["cache_type_k"]
         sv_cache_v = self._tk["cache_type_v"]
 
+        CACHE_TYPES = ["f16", "f32", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"]
+
         for var, label in [(sv_cache_k, "Cache K"), (sv_cache_v, "Cache V")]:
             col = ttk.Frame(ct_row)
             col.pack(side="left", padx=(0, 24))
             ttk.Label(col, text=label).pack(side="left")
-            cache_menu = ttk.OptionMenu(col, var, var.get(), "f16", "q8_0", "q5_0", "q4_0")
+            cache_menu = ttk.OptionMenu(col, var, var.get(), *CACHE_TYPES)
             cache_menu.pack(side="left")
             add_tooltip(cache_menu, "cache_type_k" if label == "Cache K" else "cache_type_v")
 
@@ -1776,7 +1778,7 @@ class LlamaServerGUI:
             col = ttk.Frame(ct_draft_row)
             col.pack(side="left", padx=(0, 24))
             ttk.Label(col, text=label).pack(side="left")
-            cache_menu_d = ttk.OptionMenu(col, var, var.get(), "f16", "q8_0", "q5_0", "q4_0")
+            cache_menu_d = ttk.OptionMenu(col, var, var.get(), *CACHE_TYPES)
             cache_menu_d.pack(side="left")
             add_tooltip(cache_menu_d, "cache_type_kd" if label == "Cache Kd" else "cache_type_vd")
 
