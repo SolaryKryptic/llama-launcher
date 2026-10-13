@@ -270,7 +270,7 @@ def build_perplexity_base_flags(context_size, cpu_only=False):
     flags = [
         "-fit", "on",
         "--no-warmup",
-        "--no-mmap",
+        "--load-mode", "none",
         "-lv", "3",
         "-fitc", str(context_size),
         "-c", str(context_size),
@@ -518,7 +518,7 @@ def kill_port(port=BENCH_PORT, proc_holder=None):
 
 def build_server_flags(context_size, t=None, tb=None, b=None, ub=None, fitt=None,
                        cache_k="f16", cache_v="f16", cache_kd="f16", cache_vd="f16",
-                       no_mmap=False, is_base=False, cpu_only=False,
+                       load_mode="none", is_base=False, cpu_only=False,
                        mtp=False, spec_draft_n=None, draft_model_path=None, spec_draft_p_min=None):
     flags = [
         "-c", str(context_size),
@@ -528,7 +528,7 @@ def build_server_flags(context_size, t=None, tb=None, b=None, ub=None, fitt=None
         "--host", "127.0.0.1",
         "-np", "1",
         "--no-warmup",
-        "--no-mmap"
+        "--load-mode", load_mode,
     ]
     if cpu_only:
         flags += ["-ngl", "0"]
@@ -560,8 +560,6 @@ def build_server_flags(context_size, t=None, tb=None, b=None, ub=None, fitt=None
                 flags += ["--spec-draft-p-min", f"{spec_draft_p_min:.1f}"]
             else:
                 flags += ["--spec-draft-p-min", "0.4"]
-        if no_mmap:
-            flags.append("--no-mmap")
     return flags
 
 
@@ -675,9 +673,10 @@ def parse_completion_results(response):
 def run_benchmark(model_path, server_exe, context_size, proc_holder=None,
                   t=None, tb=None, b=None, ub=None, fitt=None, cache_k="f16", cache_v="f16",
                   cache_kd="f16", cache_vd="f16",
-                  no_mmap=False, is_base=False, avg_runs=1, mtp=False, spec_draft_n=None,
+                  load_mode="none", is_base=False, avg_runs=1, mtp=False, spec_draft_n=None,
                   draft_model_path=None, spec_draft_p_min=None, cancel_flag=None, cpu_only=False,
                   stats_out=None, cooldown_secs=0.0):
+
     """Start llama-server, run benchmark, stop server. Returns (pp_tps, tg_tps)
 
     Aggregation is median over valid reps (a zero-speed rep never destroys an
@@ -713,7 +712,7 @@ def run_benchmark(model_path, server_exe, context_size, proc_holder=None,
             t=t, tb=tb, b=b, ub=ub, fitt=fitt,
             cache_k=cache_k, cache_v=cache_v,
             cache_kd=cache_kd, cache_vd=cache_vd,
-            no_mmap=no_mmap, is_base=is_base,
+            load_mode=load_mode, is_base=is_base,
             mtp=mtp, spec_draft_n=spec_draft_n,
             draft_model_path=draft_model_path,
             spec_draft_p_min=spec_draft_p_min,

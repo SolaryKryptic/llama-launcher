@@ -141,8 +141,7 @@ class FlagConfig:
 
     def __init__(self, default_perplexity_file=None):
         self.model_path = ""          # set by browse dialog
-        self.no_mmap = False            # disable memory mapped loading
-        self.mlock = False              # lock model in ram to reduce swapping
+        self.load_mode = "auto"       # model loading mode: auto, none, mmap, mlock, mmap+mlock, dio
         self.no_warmup = False          # skip warmup run
         self.mmproj_enabled = False     # include --mmproj when enabled
         self.mmproj_path = ""           # multimodal projector path
@@ -151,7 +150,7 @@ class FlagConfig:
 
         self.host = "0.0.0.0"         # bind all interfaces, allow local lan access
         self.port = 8080                # http server port
-        self.cache_ram = 8000           # cache ram in gb
+        self.cache_ram = 8192           # cache ram in MiB (0 = disable, -1 = no limit, default 8192)
         self.num_threads = os.cpu_count() or 4   # default from cpu count
         self.threads_enabled = False    # include threads flag when enabled
 
@@ -194,11 +193,9 @@ class FlagConfig:
         if model_path:
             parts.append(f' -m "{model_path}"')
 
-        # no mmap and mlock both can be active
-        if self.no_mmap:
-            parts.append(" --no-mmap")
-        if self.mlock:
-            parts.append(" --mlock")
+        # load mode replaces deprecated --no-mmap/--mlock
+        if self.load_mode and self.load_mode != "auto":
+            parts.append(f" --load-mode {self.load_mode}")
         if self.no_warmup:
             parts.append(" --no-warmup")
         if self.mmproj_enabled and self.mmproj_path:
@@ -287,8 +284,7 @@ class FlagConfig:
         """return dict of mutable flag state for persistence"""
         return {
             "model_path": self.model_path,
-            "no_mmap": self.no_mmap,
-            "mlock": self.mlock,
+            "load_mode": self.load_mode,
             "no_warmup": self.no_warmup,
             "mmproj_enabled": self.mmproj_enabled,
             "mmproj_path": self.mmproj_path,
@@ -340,11 +336,12 @@ class FlagConfig:
             "cache_type_kd": "f16",
             "cache_type_vd": "f16",
             "perplexity_file": "",
+            "load_mode": "auto",
         }
         int_defaults = {
             "ctx_size_value": 512,
             "n_gpu_layers": -1,
-            "cache_ram": 8000,
+            "cache_ram": 8192,
             "parallel": 1,
             "num_threads": os.cpu_count() or 4,
             "fitt": 1024,
@@ -367,8 +364,6 @@ class FlagConfig:
             "ppl_threshold_percent": 3.0,
         }
         bool_defaults = {
-            "no_mmap": False,
-            "mlock": False,
             "no_warmup": False,
             "mmproj_enabled": False,
             "threads_enabled": False,
@@ -431,8 +426,7 @@ class LlamaServerGUI:
         # Create all Tk variables (StringVar / IntVar) so every widget change triggers live updates
         sv_model_path = tk.StringVar(value="")                    # model path display var
         iv_auto_gpu = tk.IntVar(value=-1)                         # n-gpu-layers (-1=auto, 0-99)
-        lv_bool_no_mmap = tk.BooleanVar(value=False)              # no-mmap toggle state variable (boolean)
-        ml_bool_mlock = tk.BooleanVar(value=False)                # mlock toggle state variable (boolean)
+        sv_load_mode = tk.StringVar(value="auto")                 # load-mode combobox
         nw_bool_no_warmup = tk.BooleanVar(value=False)            # no-warmup toggle state variable (boolean)
         iv_mmproj_enabled = tk.BooleanVar(value=False)            # mmproj toggle state variable
         sv_mmproj_path = tk.StringVar(value="")                   # mmproj path display var
@@ -454,7 +448,7 @@ class LlamaServerGUI:
         iv_thread_batch = tk.IntVar(value=-1)
 
         # Cache type K and V dropdowns
-        CACHE_TYPES = ["f16", "q8_0", "q5_0", "q4_0"]
+        CACHE_TYPES = ["f16", "f32", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"]
         sv_cache_k = tk.StringVar(value="f16")
         sv_cache_v = tk.StringVar(value="f16")
         sv_cache_kd = tk.StringVar(value="f16")
@@ -462,7 +456,7 @@ class LlamaServerGUI:
 
         sv_host = tk.StringVar(value="0.0.0.0")                   # server host binding address
         iv_port = tk.IntVar(value=8080)                           # HTTP port (1-65535)
-        iv_cache_ram = tk.IntVar(value=8000)                      # cache RAM in GB (--cache-ram)
+        sv_cache_ram = tk.StringVar(value="8192")                # cache RAM in MiB (-1 = no limit, 0 = disable)
         iv_parallel = tk.IntVar(value=1)                          # parallel decoding (-np)
 
         iv_threads_enabled = tk.BooleanVar(value=False)           # toggle to show threads input
@@ -478,8 +472,7 @@ class LlamaServerGUI:
         self._vars = {
             "model_path": sv_model_path,
             "n_gpu_layers": iv_auto_gpu,
-            "no_mmap": lv_bool_no_mmap,
-            "mlock": ml_bool_mlock,
+            "load_mode": sv_load_mode,
             "no_warmup": nw_bool_no_warmup,
             "mmproj_enabled": iv_mmproj_enabled,
             "mmproj_path": sv_mmproj_path,
@@ -498,7 +491,7 @@ class LlamaServerGUI:
             "cache_type_vd": sv_cache_vd,
             "host": sv_host,
             "port": iv_port,
-            "cache_ram": iv_cache_ram,
+            "cache_ram": sv_cache_ram,
             "parallel": iv_parallel,
             "threads_enabled": iv_threads_enabled,
             "num_threads": iv_threads_val,
@@ -514,8 +507,7 @@ class LlamaServerGUI:
         self._tk = {
             "model_path": sv_model_path,
             "n_gpu_layers": iv_auto_gpu,
-            "no_mmap": lv_bool_no_mmap,
-            "mlock": ml_bool_mlock,
+            "load_mode": sv_load_mode,
             "no_warmup": nw_bool_no_warmup,
             "mmproj_enabled": iv_mmproj_enabled,
             "mmproj_path": sv_mmproj_path,
@@ -534,7 +526,7 @@ class LlamaServerGUI:
             "cache_type_vd": sv_cache_vd,
             "host": sv_host,
             "port": iv_port,
-            "cache_ram": iv_cache_ram,
+            "cache_ram": sv_cache_ram,
             "parallel": iv_parallel,
             "threads_enabled": iv_threads_enabled,
             "num_threads": iv_threads_val,
@@ -565,18 +557,6 @@ class LlamaServerGUI:
             self._hw = {"CPU": "Unknown", "GPU": "Unknown", "VRAM": "Unknown", "RAM": "Unknown", "CPU_CORES": 0, "CPU_THREADS": 0}
 
         # Change handlers, update config state and trigger command rebuild
-        def _on_no_mmap_change(*_):
-            try:
-                self.config.no_mmap = bool(lv_bool_no_mmap.get())
-            except Exception:
-                pass
-
-        def _on_mlock_change(*_):
-            try:
-                self.config.mlock = bool(ml_bool_mlock.get())
-            except Exception:
-                pass
-
         def _on_no_warmup_change(*_):
             try:
                 self.config.no_warmup = bool(nw_bool_no_warmup.get())
@@ -710,8 +690,7 @@ class LlamaServerGUI:
 
 
         # Register all traces on the Tk variables so every change triggers live command update
-        lv_bool_no_mmap.trace_add("write", lambda *_: (_on_no_mmap_change(), self._update_command()))
-        ml_bool_mlock.trace_add("write", lambda *_: (_on_mlock_change(), self._update_command()))
+
         nw_bool_no_warmup.trace_add("write", lambda *_: (_on_no_warmup_change(), self._update_command()))
 
         # Context size toggle and input
@@ -995,14 +974,9 @@ class LlamaServerGUI:
             except (ValueError, TypeError):
                 pass
 
-        if "no_mmap" in saved_flags:
+        if "load_mode" in saved_flags:
             try:
-                tk["no_mmap"].set(bool(saved_flags["no_mmap"]))
-            except (ValueError, TypeError):
-                pass
-        if "mlock" in saved_flags:
-            try:
-                tk["mlock"].set(bool(saved_flags["mlock"]))
+                tk["load_mode"].set(str(saved_flags.get("load_mode") or "auto"))
             except (ValueError, TypeError):
                 pass
         if "no_warmup" in saved_flags:
@@ -1372,7 +1346,7 @@ class LlamaServerGUI:
         self.root.after_idle(lambda: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
 
     def _section_model_loading(self, parent):
-        """model loading section, browse button, no mmap, mlock toggles"""
+        """model loading section, browse button, load-mode combobox, no-warmup toggle"""
         container, frame = self._make_collapsible_section(parent, "Model Loading", "Model Loading")
 
         # Browse row with a file dialog so the user can pick a .gguf model
@@ -1412,17 +1386,13 @@ class LlamaServerGUI:
         check_row = ttk.Frame(frame)
         check_row.pack(fill="x", pady=(4, 0))
 
-        lv_bool_no_mmap = self._tk["no_mmap"]
-        ml_bool_mlock = self._tk["mlock"]
         nw_bool_no_warmup = self._tk["no_warmup"]
+        sv_load_mode = self._tk["load_mode"]
 
-        cb_no_mmap = tk.Checkbutton(check_row, text="No-MMAP", variable=lv_bool_no_mmap)
-        cb_no_mmap.pack(side="left")
-        add_tooltip(cb_no_mmap, "no_mmap")
-
-        cb_mlock = tk.Checkbutton(check_row, text="MLock", variable=ml_bool_mlock)
-        cb_mlock.pack(side="left", padx=(12, 0))
-        add_tooltip(cb_mlock, "mlock")
+        ttk.Label(check_row, text="Load Mode:").pack(side="left")
+        cb_load_mode = ttk.Combobox(check_row, textvariable=sv_load_mode, values=["auto", "none", "mmap", "mlock", "mmap+mlock", "dio"], width=12, state="readonly")
+        cb_load_mode.pack(side="left", padx=(6, 0))
+        add_tooltip(cb_load_mode, "load_mode")
 
         cb_no_warmup = tk.Checkbutton(check_row, text="No Warmup", variable=nw_bool_no_warmup)
         cb_no_warmup.pack(side="left", padx=(12, 0))
@@ -1887,17 +1857,19 @@ class LlamaServerGUI:
         add_tooltip(entry_p, "port")
 
         # Cache RAM spinbox
-        iv_cache_ram = self._tk["cache_ram"]
+        sv_cache_ram = self._tk["cache_ram"]
         cache_frame = ttk.Frame(net_row)
         cache_frame.pack(side="left", padx=(24, 0))
         ttk.Label(cache_frame, text="Cache RAM:").pack(side="left", padx=(0, 4))
 
         def _cache_ram_safe(*_):
             try:
-                raw = iv_cache_ram.get()
-                val = int(raw) if raw else 8000
+                raw = sv_cache_ram.get()
+                if raw == "" or raw is None:
+                    return  # allow empty while typing
+                val = int(raw)
                 if not (0 <= val <= 999999): return
-                iv_cache_ram.set(max(0, min(val, 999999)))
+                sv_cache_ram.set(str(max(0, min(val, 999999))))
                 self.config.cache_ram = max(0, min(val, 999999))
             except (ValueError, TypeError, tk.TclError):
                 pass
@@ -1905,9 +1877,9 @@ class LlamaServerGUI:
             try: self._update_command()
             except Exception:
                 pass
-        iv_cache_ram.trace_add("write", lambda *_: (_cache_ram_safe(), _cache_ram_cmd()))
+        sv_cache_ram.trace_add("write", lambda *_: (_cache_ram_safe(), _cache_ram_cmd()))
 
-        entry_c = ttk.Spinbox(cache_frame, from_=0, to=999999, textvariable=iv_cache_ram, width=8)
+        entry_c = ttk.Spinbox(cache_frame, from_=0, to=999999, textvariable=sv_cache_ram, width=8)
         entry_c.pack(side="left")
         add_tooltip(entry_c, "cache_ram")
 
@@ -2412,7 +2384,7 @@ class LlamaServerGUI:
         bottom_frame.pack(fill="x", padx=20)
 
         cache_lock_frame = ttk.Frame(bottom_frame)
-        CACHE_TYPES = ["f16", "q8_0", "q5_0", "q4_0"]
+        CACHE_TYPES = ["f16", "f32", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"]
         if str(saved_lock_cache_k) not in CACHE_TYPES:
             saved_lock_cache_k = self.config.cache_type_k
         if str(saved_lock_cache_v) not in CACHE_TYPES:

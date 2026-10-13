@@ -85,7 +85,7 @@ SECTION_TITLES = [
 ]
 
 # Cache type options
-CACHE_TYPES = ["f16", "q8_0", "q5_0", "q4_0"]
+CACHE_TYPES = ["f16", "f32", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"]
 
 # Speculative decoding types
 SPEC_TYPES = ["ngram-mod", "draft-mtp"]
@@ -95,8 +95,7 @@ TOOLTIPS = {
     "model_path": "Path to the .gguf model file to load",
     "browse_model": "Open file dialog to select a .gguf model",
     "find_model": "Open Hugging Face model hub in browser",
-    "no_mmap": "Disable memory-mapped file I/O (useful for network drives)",
-    "mlock": "Lock model pages in RAM to prevent swapping to disk",
+    "load_mode": "Model loading mode: auto (default), none, mmap, mlock, mmap+mlock, or dio",
     "no_warmup": "Skip the initial warmup inference run",
     "mmproj_enabled": "Enable multimodal projector (for vision models like LLaVA)",
     "mmproj_path": "Path to the mmproj file for multimodal models",
@@ -122,7 +121,7 @@ TOOLTIPS = {
     "draft_model_path": "Path to draft model for draft-mtp speculation",
     "host": "Server bind address (0.0.0.0 = all interfaces)",
     "port": "HTTP server port (1-65535)",
-    "cache_ram": "System RAM to reserve for cache in MB (0 = unlimited)",
+    "cache_ram": "System RAM to reserve for cache in MB (0 = off)",
     "parallel": "Number of parallel decoding streams (-np)",
     "threads_enabled": "Override automatic thread detection",
     "num_threads": "Manual thread count when override enabled",
