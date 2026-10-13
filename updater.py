@@ -17,6 +17,16 @@ def get_current_version():
 
 CURRENT_VERSION = get_current_version()
 
+
+def _version_tuple(v):
+    """Parse "1.3.10" / "v1.3.10" into (1, 3, 10) so numbers compare semantically
+    (lexicographic compare breaks: "1.3.10" < "1.3.7" as strings)."""
+    try:
+        parts = [int(p) for p in str(v).strip().lstrip("vV").split(".") if p.isdigit()]
+        return tuple(parts) if parts else (0,)
+    except Exception:
+        return (0,)
+
 GITHUB_OWNER = "SolaryKryptic"
 GITHUB_REPO = "llama-launcher"
 
@@ -39,7 +49,7 @@ def updater_worker(root_window):
         data = response.json()
         latest_version = data.get("tag_name", "").strip("v")
 
-        if latest_version > CURRENT_VERSION:
+        if _version_tuple(latest_version) > _version_tuple(CURRENT_VERSION):
             root_window.after(0, lambda: prompt_update(root_window, data, latest_version))
 
     except requests.RequestException:

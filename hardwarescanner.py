@@ -3,6 +3,16 @@ import subprocess
 import json
 import re
 
+
+def _wmic(args):
+    """Run wmic; raise if unavailable so callers can fall back."""
+    return subprocess.check_output(f"wmic {args}", shell=True).decode().strip()
+
+
+def _ps(command):
+    return subprocess.check_output(
+        f'PowerShell -Command "{command}"', shell=True).decode().strip()
+
 def scan_hardware():
     os_type = platform.system()
     hardware = {"CPU": "Unknown", "GPU": "Unknown", "VRAM": "Unknown", "RAM": "Unknown"}
@@ -10,24 +20,41 @@ def scan_hardware():
     try:
         # --- WINDOWS SCANNER ---
         if os_type == "Windows":
-            # 1. CPU Model
-            cpu_out = subprocess.check_output("wmic cpu get name", shell=True).decode().strip()
-            hardware["CPU"] = cpu_out.split("\n")[-1].strip()
+            # 1. CPU Model (wmic first; PowerShell CIM fallback since newer
+            # Windows 11 builds no longer ship wmic)
+            try:
+                cpu_out = _wmic("cpu get name")
+                hardware["CPU"] = cpu_out.split("\n")[-1].strip()
+            except Exception:
+                hw_name = _ps("(Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name)")
+                if hw_name:
+                    hardware["CPU"] = hw_name
 
             # 1b. CPU cores & threads
             try:
-                cores_out = subprocess.check_output("wmic cpu get NumberOfCores", shell=True).decode().strip()
+                cores_out = _wmic("cpu get NumberOfCores")
                 cores_lines = [x.strip() for x in cores_out.split("\n") if x.strip().isdigit()]
                 hardware["CPU_CORES"] = sum(int(x) for x in cores_lines)  # sum both sockets
-                threads_out = subprocess.check_output("wmic cpu get NumberOfLogicalProcessors", shell=True).decode().strip()
+                threads_out = _wmic("cpu get NumberOfLogicalProcessors")
                 threads_lines = [x.strip() for x in threads_out.split("\n") if x.strip().isdigit()]
                 hardware["CPU_THREADS"] = sum(int(x) for x in threads_lines)
             except Exception:
-                hardware["CPU_CORES"] = 0
-                hardware["CPU_THREADS"] = 0
+                try:
+                    cores_out = _ps("(Get-CimInstance Win32_Processor | Measure-Object NumberOfCores -Sum).Sum")
+                    if cores_out.isdigit():
+                        hardware["CPU_CORES"] = int(cores_out)
+                    threads_out = _ps("(Get-CimInstance Win32_Processor | Measure-Object NumberOfLogicalProcessors -Sum).Sum")
+                    if threads_out.isdigit():
+                        hardware["CPU_THREADS"] = int(threads_out)
+                except Exception:
+                    hardware["CPU_CORES"] = 0
+                    hardware["CPU_THREADS"] = 0
 
             # 2. System RAM
-            ram_out = subprocess.check_output("wmic computersystem get totalphysicalmemory", shell=True).decode().strip()
+            try:
+                ram_out = _wmic("computersystem get totalphysicalmemory")
+            except Exception:
+                ram_out = _ps("(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory")
             ram_lines = [x.strip() for x in ram_out.split("\n") if x.strip().isdigit()]
             if ram_lines:
                 hardware["RAM"] = f"{int(ram_lines[0]) / (1024**3):.2f} GB"
@@ -84,9 +111,9 @@ def scan_hardware():
         
     return hardware
 
-# Run script
-specs = scan_hardware()
-print(f"CPU:  {specs['CPU']}")
-print(f"GPU:  {specs['GPU']}")
-print(f"VRAM: {specs['VRAM']}")
-print(f"RAM:  {specs['RAM']}")
+if __name__ == "__main__":
+    specs = scan_hardware()
+    print(f"CPU:  {specs['CPU']}")
+    print(f"GPU:  {specs['GPU']}")
+    print(f"VRAM: {specs['VRAM']}")
+    print(f"RAM:  {specs['RAM']}")

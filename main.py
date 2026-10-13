@@ -15,12 +15,6 @@ except Exception:
 default_corpus_path = ensure_default_perplexity_file()
 gui = LlamaServerGUI(root, default_perplexity_file=default_corpus_path)
 
-# Disable mouse scroll wheel to prevent accidental value changes
-def _no_scroll(event):
-    return "break"
-root.bind("<MouseWheel>", _no_scroll)
-
-# UPDATED: Use the dynamic version from updater.py so it matches GitHub file tags
 root.title(f"llama-launcher - v{updater.CURRENT_VERSION}")
 
 # Restore saved window geometry or default to centered
@@ -45,6 +39,9 @@ except Exception:
     x_pos = max(0, (screen_w - 764) // 2)
     y_pos = max(0, (screen_h - 593) // 2)
     root.geometry(f"764x693+{x_pos}+{y_pos}")
+
+# Mouse-wheel scrolling is handled by the GUI's canvas binding; a root-level
+# MouseWheel binding would swallow the event before the canvas can scroll.
 
 # ADDED: Automatically launch the silent background update check 1 second after startup
 root.after(1000, lambda: updater.check_for_updates(root))

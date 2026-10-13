@@ -3064,6 +3064,11 @@ class LlamaServerGUI:
             draft_path = self.config.draft_model_path.strip() if self.config.draft_model_path else None
             mtp_enabled = "draft-mtp" in (self.config.spec_type or "")
 
+        # Trial CSV lives beside the journal: same run, readable export.
+        journal_path_value = cfg.get("journal_path") or None
+        request_csv_path = (os.path.splitext(journal_path_value)[0] + "_trials.csv"
+                            if journal_path_value else None)
+
         request = OptimisationRequest(
             model_path=model_path,
             server_exe=server_exe,
@@ -3085,9 +3090,10 @@ class LlamaServerGUI:
             seed=cfg["seed"],
             verify_picks=cfg.get("verify_picks", 2),
             cooldown_secs=5.0,
-            journal_path=(cfg.get("journal_path") or None),
+            journal_path=journal_path_value,
             resume_study=(cfg.get("resume_study") or None),
             retry_crashed=bool(cfg.get("retry_crashed", False)),
+            trial_csv_path=request_csv_path,
         )
 
         # Run optimiser
