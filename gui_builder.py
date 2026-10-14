@@ -205,11 +205,10 @@ class FlagConfig:
         if self.n_gpu_layers != -1:
             parts.append(f" -ngl {self.n_gpu_layers}")
 
-        # flash attention and fit on, only when checked
+        # flash attention when checked; --fit already defaults to on and -fitt to 1024
         if self.flash_attention:
             parts.append(" -fa on")
-        if self.fit_on:
-            parts.append(" --fit on")
+        if self.fit_on and int(self.fitt) != 1024:
             parts.append(f" -fitt {self.fitt}")
 
         # batch size, micro batch and threads, omitted when at llama.cpp defaults
@@ -220,14 +219,14 @@ class FlagConfig:
         if self.threads != -1:
             parts.append(f" -t {self.threads}")
 
-        # thread batch only when non zero
-        if self.thread_batch > 0:
+        # -tb defaults to "same as --threads"; omit when unset or equal to threads
+        if self.thread_batch > 0 and self.thread_batch != self.threads:
             parts.append(f" -tb {self.thread_batch}")
 
         # speculative decoding only when enabled
         if self.spec_enabled and self.spec_type:
             parts.append(f" --spec-type {self.spec_type}")
-            if self.spec_draft_n_max > 0:
+            if self.spec_draft_n_max > 0 and self.spec_draft_n_max != 3:
                 parts.append(f" --spec-draft-n-max {self.spec_draft_n_max}")
             if self.spec_draft_n_min > 0:
                 parts.append(f" --spec-draft-n-min {self.spec_draft_n_min}")
@@ -2847,40 +2846,53 @@ class LlamaServerGUI:
             extra_flags.append("-ngl 0")
         if flash_attention:
             extra_flags.append("-fa on")
-        if fit_on:
-            extra_flags.append("--fit on")
         if spec_enabled:
             extra_flags.append(f"--spec-type {spec_type}")
-            if spec_draft_n:
+            if spec_draft_n and int(spec_draft_n) != 3:
                 extra_flags.append(f"--spec-draft-n-max {int(spec_draft_n)}")
             if spec_draft_n_min:
                 extra_flags.append(f"--spec-draft-n-min {int(spec_draft_n_min)}")
             if spec_draft_p_min:
                 try:
-                    extra_flags.append(f"--spec-draft-p-min {float(spec_draft_p_min):.1f}")
+                    if float(spec_draft_p_min) != 0.0:
+                        extra_flags.append(f"--spec-draft-p-min {float(spec_draft_p_min):.1f}")
                 except Exception:
                     pass
             if draft_model_path:
                 extra_flags.append(f'--model-draft "{draft_model_path}"')
             if "draft-mtp" in (spec_type or ""):
-                extra_flags.extend([f"-ctkd {cache_type_kd}", f"-ctvd {cache_type_vd}"])
+                if cache_type_kd != "f16":
+                    extra_flags.append(f"-ctkd {cache_type_kd}")
+                if cache_type_vd != "f16":
+                    extra_flags.append(f"-ctvd {cache_type_vd}")
 
         if use_baseline_command:
             baseline_prefix = "Baseline CPU-only command" if cpu_only else "Baseline command"
             baseline_suffix = " -ngl 0" if cpu_only else ""
             recommended_flags = f"{baseline_prefix}: no tuned -t/-tb/-b/-ub/-cache flags were applied.{baseline_suffix}"
         else:
-            recommended_flags = " ".join([
-                f"-t {threads}",
-                f"-tb {thread_batch}",
-                f"-b {batch}",
-                f"-ub {micro_batch}",
-                f"-c {ctx}",
-            ] + extra_flags + [
-                f"-fitt {fitt}",
-                f"-ctk {cache_k}",
-                f"-ctv {cache_v}",
-            ])
+            # Only surface flags whose value differs from llama.cpp's own default:
+            # a tuned flag set to the default is redundant, llama.cpp already uses it.
+            rec_parts = []
+
+            def _emit(flag, value, default):
+                try:
+                    same = float(value) == float(default)
+                except (TypeError, ValueError):
+                    same = str(value) == str(default)
+                if not same:
+                    rec_parts.append(f"{flag} {value}")
+
+            _emit("-t", threads, -1)
+            _emit("-tb", thread_batch, threads)   # -tb defaults to "same as --threads"
+            _emit("-b", batch, 2048)
+            _emit("-ub", micro_batch, 512)
+            _emit("-c", ctx, 0)
+            rec_parts.extend(extra_flags)
+            _emit("-fitt", fitt, 1024)
+            _emit("-ctk", cache_k, "f16")
+            _emit("-ctv", cache_v, "f16")
+            recommended_flags = " ".join(rec_parts) or "no tuned flags differ from llama.cpp defaults."
 
         lines = [
             f"Method:           {method}",
