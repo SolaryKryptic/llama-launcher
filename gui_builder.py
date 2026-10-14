@@ -603,6 +603,12 @@ class LlamaServerGUI:
         def _on_model_change(*_):
             self.config.model_path = sv_model_path.get()
 
+        def _on_load_mode_change(*_):
+            try:
+                self.config.load_mode = sv_load_mode.get() or "auto"
+            except Exception:
+                pass
+
         def _on_flash_attn_change(*_):
             try:
                 self.config.flash_attention = bool(iv_flash_attn.get())
@@ -763,6 +769,9 @@ class LlamaServerGUI:
         iv_batch_size.trace_add("write", lambda *_: (_on_batch_size_change(), self._update_command()))
         iv_micro_batch.trace_add("write", lambda *_: (_on_micro_batch_change(), self._update_command()))
         iv_threads_val_new.trace_add("write", lambda *_: (_on_threads_new_change(), self._update_command()))
+
+        # Load mode combobox trace
+        sv_load_mode.trace_add("write", lambda *_: (_on_load_mode_change(), self._update_command()))
 
         # Cache type K / V traces
         sv_cache_k.trace_add("write", lambda *_: (_on_cache_k_change(), self._update_command()))
