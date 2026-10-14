@@ -145,11 +145,11 @@ class FlagConfig:
         self.no_warmup = False          # skip warmup run
         self.mmproj_enabled = False     # include --mmproj when enabled
         self.mmproj_path = ""           # multimodal projector path
-        self.ctx_size_value = 512       # context size value
+        self.ctx_size_value = 0         # context size value (0 = loaded from model, llama.cpp default)
         self.n_gpu_layers = -1          # -1 means auto detect by gpu driver, valid 0 to 99
 
-        self.host = "0.0.0.0"         # bind all interfaces, allow local lan access
-        self.port = 8080                # http server port
+        self.host = "127.0.0.1"       # bind localhost only (llama.cpp default)
+        self.port = 9931                # http server port (llama.cpp default)
         self.cache_ram = 8192           # cache ram in MiB (0 = disable, -1 = no limit, default 8192)
         self.num_threads = os.cpu_count() or 4   # default from cpu count
         self.threads_enabled = False    # include threads flag when enabled
@@ -174,17 +174,17 @@ class FlagConfig:
         self.cache_type_v = "f16"      # kv cache type v
         self.cache_type_kd = "f16"     # draft-mtp cache type k
         self.cache_type_vd = "f16"     # draft-mtp cache type v
-        self.parallel = 1              # parallel decoding (-np)
+        self.parallel = -1             # parallel decoding (-np, -1 = auto, llama.cpp default)
 
         self.perplexity_file = resolve_perplexity_file(default_perplexity_file or DEFAULT_PERPLEXITY_FILE)
         self.ppl_threshold_percent = 3.0
 
         self.temperature = 0.8          # sampling temperature
-        self.min_p = 0.0                # minimum p sampling value
+        self.min_p = 0.05               # minimum p sampling value (llama.cpp default)
         self.top_k = 40                 # top k sampling value
         self.presence_penalty = 0.0     # presence penalty, negative to penalise
         self.top_p = 0.95               # top p nucleus sampling
-        self.repeat_penalty = 1.1       # repeat penalty, >1 to reduce repeats
+        self.repeat_penalty = 1.0       # repeat penalty (llama.cpp default, >1 to reduce repeats)
 
     def generate_command(self):
         parts = ["llama-server.exe -lv 4"]
@@ -243,11 +243,11 @@ class FlagConfig:
             parts.append(f" -ctvd {self.cache_type_vd}")
 
         # add context size value
-        ctx_val = max(2, min(int(str(self.ctx_size_value)), 999999999))
+        ctx_val = max(0, min(int(str(self.ctx_size_value)), 999999999))
         parts.append(f" -c {ctx_val}")
 
         # server settings always included
-        host = str(self.host).strip() or "0.0.0.0"
+        host = str(self.host).strip() or "127.0.0.1"
         port = max(1, min(int(str(self.port)), 65535))
         parts.append(f" --host {host}")
         parts.append(f" --port {port}")
@@ -327,7 +327,7 @@ class FlagConfig:
         """restore mutable flag state from saved dict"""
         string_defaults = {
             "model_path": "",
-            "host": "0.0.0.0",
+            "host": "127.0.0.1",
             "spec_type": "",
             "draft_model_path": "",
             "mmproj_path": "",
@@ -339,10 +339,10 @@ class FlagConfig:
             "load_mode": "auto",
         }
         int_defaults = {
-            "ctx_size_value": 512,
+            "ctx_size_value": 0,
             "n_gpu_layers": -1,
             "cache_ram": 8192,
-            "parallel": 1,
+            "parallel": -1,
             "num_threads": os.cpu_count() or 4,
             "fitt": 1024,
             "spec_draft_n_max": 0,
@@ -351,16 +351,16 @@ class FlagConfig:
             "micro_batch_size": 512,
             "threads": -1,
             "thread_batch": -1,
-            "port": 8080,
+            "port": 9931,
             "top_k": 40,
         }
         float_defaults = {
             "spec_draft_p_min": 0.0,
             "temperature": 0.8,
-            "min_p": 0.0,
+            "min_p": 0.05,
             "presence_penalty": 0.0,
             "top_p": 0.95,
-            "repeat_penalty": 1.1,
+            "repeat_penalty": 1.0,
             "ppl_threshold_percent": 3.0,
         }
         bool_defaults = {
@@ -414,6 +414,7 @@ class LlamaServerGUI:
 
     def __init__(self, root, default_perplexity_file=None):
         self.root = root
+        self._default_perplexity_file = default_perplexity_file
         self.config = FlagConfig(default_perplexity_file)
         self._last_folder = _load_last_folder()
         self._last_bat_folder = _load_bat_folder()
@@ -454,10 +455,10 @@ class LlamaServerGUI:
         sv_cache_kd = tk.StringVar(value="f16")
         sv_cache_vd = tk.StringVar(value="f16")
 
-        sv_host = tk.StringVar(value="0.0.0.0")                   # server host binding address
-        iv_port = tk.IntVar(value=8080)                           # HTTP port (1-65535)
+        sv_host = tk.StringVar(value="127.0.0.1")                 # server host binding address
+        iv_port = tk.IntVar(value=9931)                           # HTTP port (1-65535)
         sv_cache_ram = tk.StringVar(value="8192")                # cache RAM in MiB (-1 = no limit, 0 = disable)
-        iv_parallel = tk.IntVar(value=1)                          # parallel decoding (-np)
+        iv_parallel = tk.IntVar(value=-1)                         # parallel decoding (-np, -1 = auto)
 
         iv_threads_enabled = tk.BooleanVar(value=False)           # toggle to show threads input
         iv_threads_val = tk.IntVar(value=os.cpu_count() or 4)     # thread count default from CPU cores
@@ -465,8 +466,8 @@ class LlamaServerGUI:
         sv_temp = tk.DoubleVar(value=0.8)                         # temperature (float 0.05–2.0)
         sv_topk = tk.IntVar(value=40)                              # top-k integer value >= 1
         sv_topp = tk.DoubleVar(value=0.95)                        # top-p float between [0.05, 1.0]
-        sv_rp = tk.DoubleVar(value=1.1)                           # repeat penalty (float > 1.0)
-        sv_minp = tk.DoubleVar(value=0.0)                         # min-p (float -1.0–1.0)
+        sv_rp = tk.DoubleVar(value=1.0)                           # repeat penalty (float >= 1.0)
+        sv_minp = tk.DoubleVar(value=0.05)                        # min-p (float -1.0–1.0)
         sv_pp = tk.DoubleVar(value=0.0)                           # presence penalty (float -2.0–2.0)
 
         self._vars = {
@@ -662,12 +663,12 @@ class LlamaServerGUI:
                 pass
 
         def _on_host_change(*_):
-            self.config.host = sv_host.get() or "0.0.0.0"
+            self.config.host = sv_host.get() or "127.0.0.1"
 
         def _on_port_change(*_):
             try:
                 raw = iv_port.get()
-                val = int(raw) if raw else 8080
+                val = int(raw) if raw else 9931
                 self.config.port = max(1, min(val, 65535))
             except (ValueError, TypeError, tk.TclError):
                 pass
@@ -698,7 +699,7 @@ class LlamaServerGUI:
 
         def _host_trace_wrapper(*_):
             try:
-                val = sv_host.get() or "0.0.0.0"
+                val = sv_host.get() or "127.0.0.1"
                 self.config.host = val
                 self._update_command()
             except Exception:
@@ -707,7 +708,7 @@ class LlamaServerGUI:
         def _port_trace_wrapper(*_):
             try:
                 raw = iv_port.get()
-                val = int(raw) if raw else 8080
+                val = int(raw) if raw else 9931
                 self.config.port = max(1, min(val, 65535))
                 self._update_command()
             except (ValueError, TypeError, tk.TclError):
@@ -763,8 +764,8 @@ class LlamaServerGUI:
 # Live command generation is triggered by Tk variable traces on every input field
 # ---------------------------------------------------------------------------
 
-    def _on_close(self):
-        """save config flags, folder, window geometry before closing"""
+    def _save_state(self):
+        """persist config flags, folder, and window state to disk"""
         try:
             data = _load_config()
             data["flags"] = self.config.to_dict()
@@ -779,7 +780,101 @@ class LlamaServerGUI:
             _save_config(data)
         except Exception:
             pass
+
+    def _on_close(self):
+        """save config flags, folder, window geometry before closing"""
+        self._save_state()
         self.root.destroy()
+
+    def _reset_defaults(self):
+        """restore every input to llama.cpp's default values"""
+        try:
+            from tkinter import messagebox
+            if not messagebox.askyesno(
+                "Reset to defaults",
+                "Reset all settings to llama.cpp defaults?\n\n"
+                "This clears the selected model and all customised flags.",
+            ):
+                return
+        except Exception:
+            pass
+
+        fresh = FlagConfig(self._default_perplexity_file)
+        self.config = fresh
+
+        values = {
+            "model_path": fresh.model_path,
+            "n_gpu_layers": fresh.n_gpu_layers,
+            "n_gpu_layers_spinbox": fresh.n_gpu_layers,
+            "load_mode": fresh.load_mode,
+            "no_warmup": fresh.no_warmup,
+            "mmproj_enabled": fresh.mmproj_enabled,
+            "mmproj_path": fresh.mmproj_path,
+            "ctx_size_enabled": False,
+            "ctx_size_value": fresh.ctx_size_value,
+            "flash_attention": fresh.flash_attention,
+            "fit_on": fresh.fit_on,
+            "fitt": fresh.fitt,
+            "spec_enabled": fresh.spec_enabled,
+            "spec_ngram": "ngram-mod" in (fresh.spec_type or ""),
+            "spec_draft": "draft-mtp" in (fresh.spec_type or ""),
+            "spec_draft_max": fresh.spec_draft_n_max,
+            "spec_draft_min": fresh.spec_draft_n_min,
+            "spec_draft_p_min": fresh.spec_draft_p_min,
+            "batch_size": fresh.batch_size,
+            "micro_batch": fresh.micro_batch_size,
+            "threads_val": fresh.threads,
+            "thread_batch": fresh.thread_batch,
+            "cache_type_k": fresh.cache_type_k,
+            "cache_type_v": fresh.cache_type_v,
+            "cache_type_kd": fresh.cache_type_kd,
+            "cache_type_vd": fresh.cache_type_vd,
+            "host": fresh.host,
+            "port": fresh.port,
+            "cache_ram": fresh.cache_ram,
+            "parallel": fresh.parallel,
+            "threads_enabled": fresh.threads_enabled,
+            "num_threads": fresh.num_threads,
+            "temperature": fresh.temperature,
+            "top_k": fresh.top_k,
+            "top_p": fresh.top_p,
+            "repeat_penalty": fresh.repeat_penalty,
+            "min_p": fresh.min_p,
+            "presence_penalty": fresh.presence_penalty,
+        }
+        for key, val in values.items():
+            var = self._tk.get(key)
+            if var is None:
+                continue
+            try:
+                var.set(val)
+            except Exception:
+                pass
+
+        # refresh derived UI state that isn't driven by variable traces
+        try:
+            self._update_mmproj_ui()
+        except Exception:
+            pass
+        try:
+            self.draft_model_label.config(text="")
+        except Exception:
+            pass
+        try:
+            self._update_command()
+        except Exception:
+            pass
+
+        # drop stale optimiser dialog preferences, then persist immediately
+        try:
+            data = _load_config()
+            for key in ("optimiser_preset", "optimiser_trials",
+                        "optimiser_context_size", "optimiser_ppl_threshold_percent"):
+                data.pop(key, None)
+            _save_config(data)
+        except Exception:
+            pass
+        self._save_state()
 
     def _toggle_theme(self):
         """Toggle between light and dark theme."""
@@ -1075,7 +1170,7 @@ class LlamaServerGUI:
                 pass
         if "host" in saved_flags:
             try:
-                tk["host"].set(str(saved_flags.get("host") or "0.0.0.0"))
+                tk["host"].set(str(saved_flags.get("host") or "127.0.0.1"))
             except (ValueError, TypeError):
                 pass
         if "port" in saved_flags:
@@ -1149,12 +1244,19 @@ class LlamaServerGUI:
         )
         title_label.grid(row=0, column=0, sticky="ew")
         
+        # Reset button in title bar (restores llama.cpp defaults)
+        self._reset_btn = ttk.Button(
+            title_frame, text="⟲ Reset", width=9, command=self._reset_defaults
+        )
+        self._reset_btn.grid(row=0, column=1, sticky="e", padx=(0, 4))
+        add_tooltip(self._reset_btn, "reset_defaults")
+
         # Theme toggle button in title bar
         self._theme_btn = ttk.Button(
             title_frame, text="🌙 Dark" if not self._dark_mode else "☀️ Light",
             width=10, command=self._toggle_theme
         )
-        self._theme_btn.grid(row=0, column=1, sticky="e", padx=(0, 8))
+        self._theme_btn.grid(row=0, column=2, sticky="e", padx=(0, 8))
         add_tooltip(self._theme_btn, "dark_mode" if not self._dark_mode else "light_mode")
 
         # Apply initial theme
@@ -1453,7 +1555,7 @@ class LlamaServerGUI:
         def _on_ctx_val(*_):
             try:
                 raw = iv_ctx_var.get()
-                val = max(2, min(int(raw), 999999999)) if raw else 512
+                val = max(0, min(int(raw), 999999999))
                 iv_ctx_var.set(val)
                 self.config.ctx_size_value = val
             except (ValueError, TypeError, tk.TclError):
@@ -1467,7 +1569,7 @@ class LlamaServerGUI:
         def _ctx_value_trace(*_):
             try:
                 raw = iv_ctx_var.get()
-                val = max(2, min(int(raw), 999999999)) if raw else 512
+                val = max(0, min(int(raw), 999999999))
                 self.config.ctx_size_value = val
             except (ValueError, TypeError, tk.TclError):
                 pass
@@ -1827,7 +1929,7 @@ class LlamaServerGUI:
         iv_port = self._tk["port"]
 
         def _on_host_change(*_):
-            val = sv_host.get() or "0.0.0.0"
+            val = sv_host.get() or "127.0.0.1"
             sv_host.set(val)
             self.config.host = val
 
@@ -1841,7 +1943,7 @@ class LlamaServerGUI:
         def _on_port_change(*_):
             try:
                 raw = iv_port.get()
-                val = max(1, min(int(raw), 65535)) if raw else 8080
+                val = max(1, min(int(raw), 65535)) if raw else 9931
                 iv_port.set(val)
                 self.config.port = val
                 self._update_command()
@@ -1854,7 +1956,7 @@ class LlamaServerGUI:
         def _port_spin_safe(*_):
             try:
                 raw = iv_port.get()
-                val = int(raw) if raw else 8080
+                val = int(raw) if raw else 9931
                 if not (1 <= val <= 65535): return
                 iv_port.set(max(1, min(val, 65535)))
                 self.config.port = max(1, min(val, 65535))
@@ -1906,10 +2008,10 @@ class LlamaServerGUI:
         def _parallel_safe(*_):
             try:
                 raw = iv_parallel.get()
-                val = int(raw) if raw else 1
-                if not (1 <= val <= 128): return
-                iv_parallel.set(max(1, min(val, 128)))
-                self.config.parallel = max(1, min(val, 128))
+                val = int(raw) if raw else -1
+                if not (-1 <= val <= 128): return
+                iv_parallel.set(max(-1, min(val, 128)))
+                self.config.parallel = max(-1, min(val, 128))
             except (ValueError, TypeError, tk.TclError):
                 pass
         def _parallel_cmd(*_):
@@ -1918,7 +2020,7 @@ class LlamaServerGUI:
                 pass
         iv_parallel.trace_add("write", lambda *_: (_parallel_safe(), _parallel_cmd()))
 
-        entry_np = ttk.Spinbox(parallel_frame, from_=1, to=128, textvariable=iv_parallel, width=5)
+        entry_np = ttk.Spinbox(parallel_frame, from_=-1, to=128, textvariable=iv_parallel, width=5)
         entry_np.pack(side="left")
         add_tooltip(entry_np, "parallel")
 
@@ -2038,11 +2140,10 @@ class LlamaServerGUI:
         add_tooltip(topp_spin, "top_p")
 
         # --- Repeat Penalty (row 2, col 1) ---
-        sv_rp = tk.DoubleVar(value=1.1)
         def _rp_safe(*_):
             try:
                 raw = sv_rp.get()
-                val = float(raw) if raw else 1.1
+                val = float(raw) if raw else 1.0
                 self.config.repeat_penalty = min(max(val, 1.0), 3.0)
                 sv_rp.set(min(max(val, 1.0), 3.0))
             except Exception:

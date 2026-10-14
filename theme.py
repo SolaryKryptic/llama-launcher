@@ -99,7 +99,7 @@ TOOLTIPS = {
     "no_warmup": "Skip the initial warmup inference run",
     "mmproj_enabled": "Enable multimodal projector (for vision models like LLaVA)",
     "mmproj_path": "Path to the mmproj file for multimodal models",
-    "ctx_size_value": "Context window size in tokens (2 to 999,999,999)",
+    "ctx_size_value": "Context window size in tokens (0 = loaded from model, up to 999,999,999)",
     "ctx_size_enabled": "Toggle to show/hide context size input",
     "n_gpu_layers": "Number of layers to offload to GPU (-1 = auto, 0 = CPU only)",
     "flash_attention": "Enable Flash Attention for faster attention computation",
@@ -119,10 +119,10 @@ TOOLTIPS = {
     "spec_draft_n_min": "Minimum draft tokens (0 = unset)",
     "spec_draft_p_min": "Minimum probability for draft acceptance (0 = unset)",
     "draft_model_path": "Path to draft model for draft-mtp speculation",
-    "host": "Server bind address (0.0.0.0 = all interfaces)",
+    "host": "Server bind address (127.0.0.1 = local only, 0.0.0.0 = all interfaces)",
     "port": "HTTP server port (1-65535)",
     "cache_ram": "System RAM to reserve for cache in MB (0 = off)",
-    "parallel": "Number of parallel decoding streams (-np)",
+    "parallel": "Number of parallel decoding streams (-np, -1 = auto)",
     "threads_enabled": "Override automatic thread detection",
     "num_threads": "Manual thread count when override enabled",
     "temperature": "Sampling temperature (0.05-2.0, higher = more random)",
@@ -134,6 +134,7 @@ TOOLTIPS = {
     "copy_command": "Copy the generated command to clipboard",
     "run_command": "Launch command in a new CMD window",
     "save_bat": "Save command as a .bat batch file",
+    "reset_defaults": "Reset all settings to llama.cpp defaults",
     "optimise": "Run Bayesian optimisation to find best flags",
     "perplexity_file": "Text file used for perplexity validation",
     "ppl_threshold": "Max PPL degradation allowed (%)",
@@ -334,7 +335,7 @@ def apply_theme(root, dark_mode=False):
                                  highlightthickness=1,
                                  highlightbackground=border,
                                  highlightcolor=accent)
-            elif wclass == "Text":
+            elif wclass == "Text": # text class
                 # Note: Text has no disabledbackground/disabledforeground
                 # options; keep them out or the whole configure call fails.
                 widget.configure(background=bg, foreground=fg,
