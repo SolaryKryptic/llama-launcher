@@ -212,9 +212,11 @@ class FlagConfig:
             parts.append(" --fit on")
             parts.append(f" -fitt {self.fitt}")
 
-        # batch size, micro batch and threads included when set, -t skipped for -1
-        parts.append(f" -b {self.batch_size}")
-        parts.append(f" -ub {self.micro_batch_size}")
+        # batch size, micro batch and threads, omitted when at llama.cpp defaults
+        if int(self.batch_size) != 2048:
+            parts.append(f" -b {self.batch_size}")
+        if int(self.micro_batch_size) != 512:
+            parts.append(f" -ub {self.micro_batch_size}")
         if self.threads != -1:
             parts.append(f" -t {self.threads}")
 
@@ -235,26 +237,35 @@ class FlagConfig:
             if draft_path:
                 parts.append(f' --model-draft "{draft_path}"')
 
-        # cache types always included
-        parts.append(f" -ctk {self.cache_type_k}")
-        parts.append(f" -ctv {self.cache_type_v}")
+        # cache types: f16 is the llama.cpp default, so omit when unchanged
+        if self.cache_type_k != "f16":
+            parts.append(f" -ctk {self.cache_type_k}")
+        if self.cache_type_v != "f16":
+            parts.append(f" -ctv {self.cache_type_v}")
         if "draft-mtp" in (self.spec_type or ""):
-            parts.append(f" -ctkd {self.cache_type_kd}")
-            parts.append(f" -ctvd {self.cache_type_vd}")
+            if self.cache_type_kd != "f16":
+                parts.append(f" -ctkd {self.cache_type_kd}")
+            if self.cache_type_vd != "f16":
+                parts.append(f" -ctvd {self.cache_type_vd}")
 
-        # add context size value
+        # context size: 0 = loaded from model (llama.cpp default), omit when unchanged
         ctx_val = max(0, min(int(str(self.ctx_size_value)), 999999999))
-        parts.append(f" -c {ctx_val}")
+        if ctx_val != 0:
+            parts.append(f" -c {ctx_val}")
 
-        # server settings always included
+        # server settings, omitted when at llama.cpp defaults
         host = str(self.host).strip() or "127.0.0.1"
         port = max(1, min(int(str(self.port)), 65535))
-        parts.append(f" --host {host}")
-        parts.append(f" --port {port}")
-        parts.append(f" --cache-ram {self.cache_ram}")
-        parts.append(f" -np {self.parallel}")
+        if host != "127.0.0.1":
+            parts.append(f" --host {host}")
+        if port != 9931:
+            parts.append(f" --port {port}")
+        if int(self.cache_ram) != 8192:
+            parts.append(f" --cache-ram {self.cache_ram}")
+        if int(self.parallel) != -1:
+            parts.append(f" -np {self.parallel}")
 
-        # sampling params always included
+        # sampling params, omitted when at llama.cpp defaults
         temp = max(0.05, min(float(str(self.temperature)), 2.0))
         minp = min(max(float(str(self.min_p)), -1.0), 1.0)
         topk = max(1, int(str(self.top_k)))
@@ -262,12 +273,18 @@ class FlagConfig:
         topp = min(max(float(str(self.top_p)), 0.05), 1.0)
         rp = min(max(float(str(self.repeat_penalty)), 1.0), 3.0)
 
-        parts.append(f" --temp {temp:.2f}")
-        parts.append(f" --min-p {minp:.2f}")
-        parts.append(f" --top-k {topk}")
-        parts.append(f" --presence-penalty {pp:.2f}")
-        parts.append(f" --top-p {topp:.2f}")
-        parts.append(f" --repeat-penalty {rp:.2f}")
+        if abs(temp - 0.80) > 1e-9:
+            parts.append(f" --temp {temp:.2f}")
+        if abs(minp - 0.05) > 1e-9:
+            parts.append(f" --min-p {minp:.2f}")
+        if topk != 40:
+            parts.append(f" --top-k {topk}")
+        if abs(pp - 0.0) > 1e-9:
+            parts.append(f" --presence-penalty {pp:.2f}")
+        if abs(topp - 0.95) > 1e-9:
+            parts.append(f" --top-p {topp:.2f}")
+        if abs(rp - 1.0) > 1e-9:
+            parts.append(f" --repeat-penalty {rp:.2f}")
 
         return "".join(parts)
 
