@@ -6,8 +6,11 @@ A Python GUI application for generating [llama.cpp](https://github.com/ggerganov
 
 Point-and-click interface to configure and generate `llama-server` command-line arguments without typing them manually. Select your GGUF model, adjust settings, run the command.
 
-<img width="765" height="894" alt="image" src="https://github.com/user-attachments/assets/84888536-f92f-488e-bc87-10e53cb829d8" />
+<img width="767" height="733" alt="image" src="https://github.com/user-attachments/assets/4442b8bd-f5c3-4077-b6f1-772aacc0969a" />
 
+
+## - Qwen 3.8 27B results after optimisation
+<img width="612" height="626" alt="image" src="https://github.com/user-attachments/assets/f84562ed-928a-4df2-9712-fa7d913c129d" />
 
 ## - Qwen 4B MTP results after optimisation
 <img width="578" height="589" alt="image" src="https://github.com/user-attachments/assets/f5597e44-4fa5-4963-9c6b-2ab60c1555f0" />
